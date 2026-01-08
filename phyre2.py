@@ -2,18 +2,34 @@ import streamlit as st
 import requests
 import time
 from io import StringIO
-import re  # Metin içinden Link avlamak için gerekli kütüphane
+import re
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title="Phyre2 Linkli Takip", page_icon="🔗")
+st.set_page_config(page_title="Phyre2 Pro", page_icon="🧬")
 
-if st.sidebar.button("🔄 Sayfayı Yenile"):
-    st.rerun()
+# --- KRİTİK DÜZELTME: Session State (Hafıza) ---
+# Dosya yükleyicinin kimliğini (ID) burada tutuyoruz.
+if 'uploader_key' not in st.session_state:
+    st.session_state.uploader_key = 0
 
-st.title("🧬 Phyre2 - Canlı Takip Linkli")
-st.markdown("Bu versiyon, gönderim sonrası oluşan **Takip Linkini** (Job ID) otomatik olarak yakalar ve size sunar.")
+# --- SIFIRLAMA FONKSİYONU ---
+def reset_app():
+    # Kimlik numarasını artırarak eski dosyayı "unutmasını" sağlıyoruz
+    st.session_state.uploader_key += 1
+    # Sayfayı yeniden başlatıyoruz
+    # st.rerun() gerekmiyor çünkü callback fonksiyonu bitince otomatik yenilenir
 
+st.title("🧬 Phyre2 - Canlı Takip & Pro Mod")
+st.markdown("Link yakalama özelliği ve **Gerçek Sıfırlama** butonu ile güncellendi.")
+
+# --- SIDEBAR ---
 with st.sidebar:
+    # SIFIRLAMA BUTONU (En üstte)
+    # on_click parametresi ile butona basıldığı an reset_app fonksiyonunu çalıştırıyoruz.
+    st.button("🔄 Yeni Analiz / Temizle", on_click=reset_app, type="primary")
+    
+    st.divider() # Çizgi çek
+    
     st.header("Ayarlar")
     email = st.text_input("E-mail Adresiniz", value="muratturan077@gmail.com")
     mode = st.selectbox("Modelleme Modu", ["normal", "intensive"])
@@ -23,14 +39,20 @@ with st.sidebar:
     
     bekleme_suresi = st.number_input("Bekleme (sn)", 0.5, 30.0, 2.0, 0.1, "%.2f")
 
-uploaded_file = st.file_uploader("Protein FASTA Dosyası Seçin", type=["fa", "fasta", "txt"])
+# --- DOSYA YÜKLEME (Dynamic Key) ---
+# key=... kısmı sayesinde her sıfırlamada burası "yeni" bir kutu gibi davranır.
+uploaded_file = st.file_uploader(
+    "Protein FASTA Dosyası Seçin", 
+    type=["fa", "fasta", "txt"],
+    key=f"uploader_{st.session_state.uploader_key}" 
+)
 
 if uploaded_file and email:
     stringio = StringIO(uploaded_file.getvalue().decode("utf-8"))
     content = stringio.read()
     raw_entries = [x for x in content.split('>') if x.strip()]
     
-    st.info(f"📂 {len(raw_entries)} sekans yüklendi.")
+    st.info(f"📂 {len(raw_entries)} sekans yüklendi. Analize hazır.")
     
     if st.button("🚀 Gönderimi Başlat"):
         progress_bar = st.progress(0)
@@ -69,20 +91,16 @@ if uploaded_file and email:
                 
                 if response.status_code == 200 and any(x in resp_text_lower for x in success_keywords):
                     
-                    # --- YENİ EKLENEN KISIM: LINK AVLAMA (REGEX) ---
-                    # Sunucudan gelen HTML içinde 'jobid=xxxx' desenini arıyoruz
+                    # LINK AVLAMA (REGEX)
                     job_match = re.search(r"jobid=([a-zA-Z0-9]+)", response.text)
                     
                     if job_match:
-                        # Job ID bulunduysa linki oluştur
                         job_id = job_match.group(1)
                         monitor_link = f"http://www.sbg.bio.ic.ac.uk/phyre2/webscripts/jobmonitor-harry.cgi?jobid={job_id}"
                         
-                        # Tıklanabilir Link ile Yeşil Mesaj
                         results.success(f"✅ [{i+1}] BAŞARILI: **{header}**")
                         results.markdown(f"👉 **[🔗 Buraya Tıklayarak Sonucu İzle]({monitor_link})** (Job ID: `{job_id}`)")
                     else:
-                        # ID bulunamazsa standart mesaj (Link oluşmadı ama gitti)
                         results.success(f"✅ [{i+1}] Gönderildi (Link yakalanamadı): {header}")
                         
                 else:
