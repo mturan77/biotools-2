@@ -4,19 +4,27 @@ import time
 from io import StringIO
 
 # Sayfa Başlığı ve İkonu
-st.set_page_config(page_title="Phyre2 Otomasyonu", page_icon="🧬")
+st.set_page_config(page_title="Phyre2 Dedektif Modu", page_icon="🕵️‍♂️")
+
+# --- YENİ EKLENEN KISIM: REFRESH BUTONU ---
+# Bu buton sol menüde en üste yerleşir. Basıldığında sayfayı yeniden yükler (F5 gibi).
+if st.sidebar.button("🔄 Sayfayı Yenile / Sıfırla"):
+    st.rerun()
 
 st.title("🧬 Phyre2 Cloud Gönderici")
-st.markdown("""
-Bu araç, tarayıcı engellerine takılmadan **Phyre2** sunucusuna doğrudan veri gönderir.
-""")
+st.markdown("Bu araç protein sekanslarını Phyre2 sunucusuna gönderir ve yanıtı kontrol eder.")
 
 # --- Sidebar (Ayarlar) ---
 with st.sidebar:
     st.header("Ayarlar")
-    email = st.text_input("E-mail Adresiniz", placeholder="mail@universite.edu.tr")
+    # Varsayılan mail adresi
+    email = st.text_input("E-mail Adresiniz", value="muratturan077@gmail.com")
     mode = st.selectbox("Modelleme Modu", ["normal", "intensive"])
-    st.info("ℹ️ Phyre2 sunucusu eski olduğu için her gönderim arasında 2 saniye bekleme süresi konulmuştur.")
+    
+    # Hız Ayarı (İsteğe bağlı kontrol)
+    bekleme_suresi = st.slider("İki gönderim arası bekleme (saniye)", 1.0, 10.0, 2.0)
+    
+    st.info("ℹ️ İşlem çalışırken durdurmak için sayfanın sağ üstündeki 'Stop' butonuna basabilir veya 'Sayfayı Yenile' diyebilirsiniz.")
 
 # --- Dosya Yükleme ---
 uploaded_file = st.file_uploader("Protein FASTA Dosyası Seçin", type=["fa", "fasta", "txt"])
@@ -31,15 +39,15 @@ if uploaded_file and email:
     
     st.success(f"📂 Dosya okundu. Toplam **{len(raw_entries)}** sekans bulundu.")
     
+    # Gönderim Butonu
     if st.button("🚀 Gönderimi Başlat"):
-        # İlerleme Çubuğu
+        # İlerleme Çubuğu ve Durum Mesajı
         progress_bar = st.progress(0)
         status_text = st.empty()
-        log_area = st.container()
         
-        success_count = 0
-        fail_count = 0
-        
+        # Sonuçları göstermek için bir alan
+        results_container = st.container()
+
         # Döngü
         for i, entry in enumerate(raw_entries):
             # Header ve Sequence ayrıştırma
@@ -56,39 +64,39 @@ if uploaded_file and email:
             
             # HTML analizinden bulduğumuz KESİN parametreler
             payload = {
-                'usr-email': email,      # 'email' değil 'usr-email'
-                'seq-desc': header,      # 'jobid' değil 'seq-desc'
-                'sequence': sequence,    # 'seq' değil 'sequence'
+                'usr-email': email,      
+                'seq-desc': header,      
+                'sequence': sequence,    
                 'modelmode': mode
             }
             
             try:
-                # Sunucu tarafında istek atıyoruz (Browser engeli yok)
+                # Sunucu tarafında istek atıyoruz
                 response = requests.post(url, data=payload, timeout=30)
                 
-                # Phyre2 genelde başarılıysa 200 döner ve içinde 'submitted' yazar
+                # Yanıtı Kontrol Et
                 if response.status_code == 200:
-                    # Basit bir kontrol: Hata mesajı var mı?
-                    if "valid e-mail" in response.text.lower():
-                        log_area.error(f"❌ [{i+1}] Hata: E-mail formatı beğenilmedi -> {header}")
-                        fail_count += 1
+                    # Başarı mesajı arıyoruz
+                    if "submitted" in response.text.lower() or "success" in response.text.lower():
+                        results_container.success(f"✅ [{i+1}] BAŞARILI: {header}")
+                        
+                        # İstersen burada 'Kanıt' göstergesini de açabilirsin
+                        with results_container.expander(f"🔍 Kanıt Detayı ({header})"):
+                            st.code(response.text[:300]) # İlk 300 karakter
+                            
                     else:
-                        # Genelde başarılı sayılır
-                        log_area.success(f"✅ [{i+1}] Gönderildi -> {header}")
-                        success_count += 1
+                        results_container.warning(f"⚠️ [{i+1}] Şüpheli Durum: {header}")
                 else:
-                    log_area.error(f"❌ [{i+1}] Sunucu Hatası ({response.status_code}) -> {header}")
-                    fail_count += 1
+                    results_container.error(f"❌ [{i+1}] Sunucu Hatası ({response.status_code}) -> {header}")
                     
             except Exception as e:
-                log_area.error(f"❌ [{i+1}] Bağlantı Hatası: {str(e)}")
-                fail_count += 1
+                results_container.error(f"❌ [{i+1}] Bağlantı Hatası: {str(e)}")
             
-            # Sunucuyu boğmamak için bekleme
-            time.sleep(2)
+            # Seçilen süre kadar bekle
+            time.sleep(bekleme_suresi)
             
         st.balloons()
-        st.success(f"🏁 İşlem Tamamlandı! Başarılı: {success_count}, Hata: {fail_count}")
+        st.success("🏁 Tüm işlemler tamamlandı!")
 
 elif not email and uploaded_file:
     st.warning("Lütfen sol taraftan e-mail adresinizi girin.")
