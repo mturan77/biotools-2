@@ -7,144 +7,172 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import time
 import urllib.parse
-import io
+import os
+import shutil
+import zipfile
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="Gen Veri Robotu (Selenium)", page_icon="🧬", layout="wide")
+st.set_page_config(page_title="JSON Toplu İndirici", page_icon="📦", layout="wide")
 
-# --- SELENIUM AYARLARI (Streamlit Cloud İçin Kritik) ---
-def get_driver():
+# --- İNDİRME KLASÖRÜ AYARLARI ---
+DOWNLOAD_DIR = os.path.join(os.getcwd(), "downloaded_jsons")
+
+# Klasörü temizle ve yeniden oluştur (Her seferinde temiz başla)
+if os.path.exists(DOWNLOAD_DIR):
+    shutil.rmtree(DOWNLOAD_DIR)
+os.makedirs(DOWNLOAD_DIR)
+
+# --- SELENIUM AYARLARI ---
+def get_driver_with_download():
     chrome_options = Options()
-    chrome_options.add_argument("--headless")  # Arayüzsüz mod (Ekranda pencere açılmaz)
-    chrome_options.add_argument("--no-sandbox") # Cloud ortamı için gerekli
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
     
-    # Tarayıcıyı başlat
+    # Chrome'a "Dosyaları bu klasöre indir ve soru sorma" diyoruz
+    prefs = {
+        "download.default_directory": DOWNLOAD_DIR,
+        "download.prompt_for_download": False,
+        "download.directory_upgrade": True,
+        "safebrowsing.enabled": True
+    }
+    chrome_options.add_experimental_option("prefs", prefs)
+    
     driver = webdriver.Chrome(options=chrome_options)
     return driver
 
-# --- SCRAPING FONKSİYONU ---
-def fetch_data_with_selenium(species, gene_id):
-    driver = None
-    safe_species = urllib.parse.quote(species.strip())
-    safe_id = gene_id.strip()
-    url = f"https://www.insect-genome.com/gene/{safe_species}/{safe_id}"
-    
-    data = {
-        "Gen ID": gene_id,
-        "URL": url,
-        "Description": "Bulunamadı",
-        "JSON_Link": "-",
-        "Durum": "Başarısız"
-    }
-
-    try:
-        driver = get_driver()
-        driver.get(url)
-        
-        # Sayfanın yüklenmesi için bekle (Max 10 saniye)
-        wait = WebDriverWait(driver, 10)
-        
-        # 1. DESCRIPTION'ı ALMA (Resimde gördüğümüz yeşil alan)
-        try:
-            # "Description" yazan başlığı bulmaya çalışıyoruz
-            # XPath: İçinde 'Description' yazan herhangi bir elementi bul
-            desc_element = wait.until(EC.presence_of_element_located((By.XPATH, "//*[contains(text(), 'Description')]")))
-            
-            # Genelde description yazısı bu başlığın hemen altındadır veya yanındadır.
-            # O yüzden bulunduğu div'in metnini almaya çalışalım.
-            parent = desc_element.find_element(By.XPATH, "..") # Bir üst kapsayıcıya çık
-            full_text = parent.text
-            
-            # "Description" kelimesini temizle
-            clean_desc = full_text.replace("Description", "").strip()
-            if clean_desc:
-                data["Description"] = clean_desc
-                data["Durum"] = "Başarılı"
-                
-        except:
-            data["Description"] = "Description Alanı Bulunamadı"
-
-        # 2. EXPORT JSON BUTONUNU BULMA
-        try:
-            # Butonun üzerinde "Export JSON" yazdığını resimden görüyoruz
-            json_btn = driver.find_element(By.XPATH, "//button[contains(text(), 'Export JSON')] | //a[contains(text(), 'Export JSON')]")
-            
-            # Eğer bu bir link ise (href varsa) alalım
-            link = json_btn.get_attribute("href")
-            if link:
-                data["JSON_Link"] = link
-            else:
-                data["JSON_Link"] = "Buton var ama link değil (JS Trigger)"
-                
-        except:
-            data["JSON_Link"] = "Buton Bulunamadı"
-
-    except Exception as e:
-        data["Durum"] = f"Hata: {str(e)}"
-    
-    finally:
-        if driver:
-            driver.quit() # Tarayıcıyı kapatmayı unutma
-            
-    return data
+# --- ZIP OLUŞTURMA FONKSİYONU ---
+def zip_files(directory_path):
+    zip_path = "all_genes_json.zip"
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        for root, dirs, files in os.walk(directory_path):
+            for file in files:
+                zipf.write(os.path.join(root, file), file)
+    return zip_path
 
 # --- ARAYÜZ ---
-st.title("🧬 Insect Genome - Selenium Veri Kazıyıcı")
+st.title("📦 Toplu JSON İndirme ve Paketleme Aracı")
 st.markdown("""
-Bu versiyon **Selenium** kullanır. Sayfayı arka planda gerçekten açar, 
-Javascript'in yüklenmesini bekler ve ekrandaki veriyi okur.
+Bu araç her gen sayfasına gider, **'Export JSON'** butonuna basar, inen dosyayı alır ve 
+hepsini tek bir **ZIP** dosyası olarak size verir.
 """)
 
-# Sidebar
 with st.sidebar:
-    st.header("Veri Girişi")
-    uploaded_file = st.file_uploader("Excel Yükle", type=['xlsx', 'xls'])
+    uploaded_file = st.file_uploader("Excel Listesi", type=['xlsx', 'xls'])
     species_input = st.text_input("Tür (Species)", value="musca domestica")
 
-# Ana Akış
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
-    
-    # Sütun Seçimi
     cols = df.columns.tolist()
     target_col = st.selectbox("Gen ID Sütunu:", cols)
     
-    if st.button("🚀 Taramayı Başlat", type="primary"):
-        results = []
+    if st.button("🚀 İndirmeyi Başlat", type="primary"):
+        st.warning("İşlem başladı. Dosyalar arka planda indiriliyor, lütfen bekleyin...")
+        
         progress_bar = st.progress(0)
-        status_text = st.empty()
+        status_area = st.empty()
+        report_data = []
+        
+        driver = get_driver_with_download()
         
         total = len(df)
+        success_count = 0
         
-        # Döngü
         for i, row in df.iterrows():
-            g_id = str(row[target_col])
+            g_id = str(row[target_col]).strip()
+            safe_species = urllib.parse.quote(species_input.strip())
+            url = f"https://www.insect-genome.com/gene/{safe_species}/{g_id}"
             
-            status_text.text(f"Taranıyor ({i+1}/{total}): {g_id}")
+            status_area.text(f"İşleniyor ({i+1}/{total}): {g_id} -> Sayfaya gidiliyor...")
             
-            # Selenium ile çek
-            scraped_data = fetch_data_with_selenium(species_input, g_id)
-            results.append(scraped_data)
+            status = "Başarısız"
+            file_name = "-"
+            
+            try:
+                driver.get(url)
+                wait = WebDriverWait(driver, 8) # Maksimum bekleme
+                
+                # 'Export JSON' butonunu bul ve TIKLA
+                try:
+                    # Butonu bul
+                    json_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Export JSON')] | //a[contains(text(), 'Export JSON')]")))
+                    
+                    # Tıklamadan önce mevcut dosya sayısını al
+                    files_before = set(os.listdir(DOWNLOAD_DIR))
+                    
+                    # Tıkla
+                    json_btn.click()
+                    
+                    # İndirmenin bitmesini bekle (Dosya sayısının artmasını bekle)
+                    # Basit bir bekleme döngüsü (Max 5 saniye bekle)
+                    for _ in range(5):
+                        time.sleep(1)
+                        files_after = set(os.listdir(DOWNLOAD_DIR))
+                        if len(files_after) > len(files_before):
+                            # Yeni inen dosyayı bul
+                            new_file = list(files_after - files_before)[0]
+                            # Dosya .crdownload (Chrome geçici dosyası) ise bitmesini bekle
+                            if not new_file.endswith('.crdownload'):
+                                file_name = new_file
+                                status = "İNDİRİLDİ"
+                                success_count += 1
+                                break
+                    
+                    if status == "Başarısız":
+                        status = "Zaman Aşımı (Dosya inemedi)"
+                        
+                except Exception as e:
+                    status = "Buton Bulunamadı / Tıklanamadı"
+            
+            except Exception as e:
+                status = f"Sayfa Hatası: {str(e)}"
+            
+            # Rapor listesine ekle
+            report_data.append({
+                "Gen ID": g_id,
+                "Durum": status,
+                "İnen Dosya": file_name,
+                "URL": url
+            })
             
             progress_bar.progress((i+1)/total)
-            # time.sleep(1) # Gerekirse bekleme süresi artırılabilir
-            
-        status_text.success("✅ İşlem Tamamlandı!")
         
-        # Sonuçları Göster
-        res_df = pd.DataFrame(results)
-        st.dataframe(res_df)
+        driver.quit()
+        status_area.success(f"✅ İşlem Bitti! Toplam {success_count} dosya indirildi.")
         
-        # İndir
+        # --- SONUÇLARI GÖSTER VE İNDİR ---
+        
+        col1, col2 = st.columns(2)
+        
+        # 1. ZIP DOSYASI (JSONLAR)
+        if success_count > 0:
+            zip_file_path = zip_files(DOWNLOAD_DIR)
+            with open(zip_file_path, "rb") as f:
+                with col1:
+                    st.download_button(
+                        label="📦 TÜM JSONLARI İNDİR (.ZIP)",
+                        data=f,
+                        file_name="gen_json_arsivi.zip",
+                        mime="application/zip",
+                        type="primary"
+                    )
+        
+        # 2. RAPOR DOSYASI (EXCEL)
+        report_df = pd.DataFrame(report_data)
+        
+        # Excel oluştur (Openpyxl ile)
         buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-            res_df.to_excel(writer, index=False)
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            report_df.to_excel(writer, index=False)
             
-        st.download_button(
-            label="📥 Sonuçları İndir (Excel)",
-            data=buffer.getvalue(),
-            file_name="selenium_gen_sonuclari.xlsx",
-            mime="application/vnd.ms-excel"
-        )
+        with col2:
+            st.download_button(
+                label="📄 Raporu İndir (.xlsx)",
+                data=buffer.getvalue(),
+                file_name="indirme_raporu.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            
+        st.write("Detaylı Rapor Önizlemesi:")
+        st.dataframe(report_df)
