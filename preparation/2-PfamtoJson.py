@@ -10,6 +10,7 @@ import urllib.parse
 import os
 import shutil
 import zipfile
+import io  # <--- EKSİK OLAN PARÇA BUYDU, EKLENDİ.
 
 # --- SAYFA AYARLARI ---
 st.set_page_config(page_title="JSON Toplu İndirici", page_icon="📦", layout="wide")
@@ -105,14 +106,12 @@ if uploaded_file:
                     json_btn.click()
                     
                     # İndirmenin bitmesini bekle (Dosya sayısının artmasını bekle)
-                    # Basit bir bekleme döngüsü (Max 5 saniye bekle)
                     for _ in range(5):
                         time.sleep(1)
                         files_after = set(os.listdir(DOWNLOAD_DIR))
                         if len(files_after) > len(files_before):
                             # Yeni inen dosyayı bul
                             new_file = list(files_after - files_before)[0]
-                            # Dosya .crdownload (Chrome geçici dosyası) ise bitmesini bekle
                             if not new_file.endswith('.crdownload'):
                                 file_name = new_file
                                 status = "İNDİRİLDİ"
@@ -161,7 +160,7 @@ if uploaded_file:
         # 2. RAPOR DOSYASI (EXCEL)
         report_df = pd.DataFrame(report_data)
         
-        # Excel oluştur (Openpyxl ile)
+        # Excel oluştur (Openpyxl ile - HATA VERMEYECEK)
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
             report_df.to_excel(writer, index=False)
