@@ -8,75 +8,59 @@ from bs4 import BeautifulSoup
 import pandas as pd
 import io
 import time
-from datetime import datetime
 
-# --- 1. CONFIGURATION & STATE MANAGEMENT ---
+# --- 1. AYARLAR VE STİL (PHYRE2 TASARIM MANTIĞI) ---
 st.set_page_config(
-    page_title="ProtParam Automation Tool",
+    page_title="ProtParam Analyzer",
     page_icon="🧬",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Initialize Session State for Data Persistence
+# Session State (Verilerin kaybolmaması için)
 if 'results' not in st.session_state:
     st.session_state.results = None
-if 'history' not in st.session_state:
-    st.session_state.history = []
 
-# --- 2. CUSTOM CSS (PHYRE2 STYLE) ---
+# CSS: Phyre2 benzeri temiz sol menü ve kırmızı butonlar
 st.markdown("""
     <style>
-    /* Sidebar Styling */
+    /* Sol Menü Arka Planı */
     [data-testid="stSidebar"] {
-        background-color: #f4f6f9;
-        border-right: 1px solid #e0e0e0;
+        background-color: #f0f2f6;
+        border-right: 1px solid #d1d5db;
     }
-    
-    /* Primary Button (Red/Pink like Phyre2) */
-    div.stButton > button:first-child {
-        background-color: #ff4b4b;
+    /* Buton Tasarımı (Phyre2 kırmızısı) */
+    div.stButton > button {
+        width: 100%;
+        background-color: #dc3545;
         color: white;
-        border-radius: 6px;
         border: none;
-        font-weight: 600;
-        padding: 0.5rem 1rem;
+        padding: 0.6rem;
+        font-weight: bold;
+        border-radius: 5px;
     }
-    div.stButton > button:first-child:hover {
-        background-color: #ff3333;
+    div.stButton > button:hover {
+        background-color: #bb2d3b;
         color: white;
     }
-
-    /* Secondary Buttons (Gray) */
-    .secondary-button {
-        background-color: #6c757d;
-    }
-
-    /* Card Styling */
-    .css-1r6slb0 {
+    /* Kart Görünümü */
+    .metric-container {
         background-color: white;
-        padding: 2rem;
-        border-radius: 10px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.05);
-    }
-    
-    /* Header Styling */
-    h1 {
-        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-        color: #2c3e50;
-        font-weight: 700;
+        padding: 15px;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        text-align: center;
     }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 3. SELENIUM BACKEND ---
+# --- 2. BACKEND (SENİN KODUN) ---
 def get_driver():
-    """Headless Chrome Driver for Streamlit Cloud."""
+    """Streamlit Cloud uyumlu Headless Driver"""
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1080")
     return webdriver.Chrome(options=chrome_options)
 
@@ -118,114 +102,101 @@ def scrape_protparam(driver, sequence):
         return data
     except Exception as e: return {"Error": str(e)}
 
-# --- 4. SIDEBAR (CONTROLS) ---
+# --- 3. ARAYÜZ (PHYRE2 LAYOUT) ---
+
+# --- SOL PANEL (INPUT KISMI) ---
 with st.sidebar:
-    # 4.1. Reset Button
-    if st.button("🔄 New Analysis / Reset", use_container_width=True):
-        st.session_state.results = None
-        st.experimental_rerun()
-
-    st.markdown("---")
+    st.title("⚙️ Kontrol Paneli")
+    st.markdown("Analiz dosyasını buradan yükleyip başlatabilirsin.")
     
-    # 4.2. Analysis History (Visual Mockup)
-    st.markdown("#### 📂 Analysis Sessions")
-    if len(st.session_state.history) == 0:
-        st.caption("No history available.")
-    else:
-        for item in st.session_state.history[-3:]: # Show last 3
-            st.text(f"🕒 {item}")
-
-    st.markdown("---")
-
-    # 4.3. Configuration
-    st.markdown("#### ⚙️ Configuration")
-    user_email = st.text_input("E-mail Address (Optional)", placeholder="researcher@university.edu")
+    # 1. Dosya Yükleme (Phyre2 stili solda)
+    uploaded_file = st.file_uploader("FASTA Dosyası Seç", type=["fasta", "fa", "txt"])
     
-    analysis_mode = st.selectbox("Analysis Mode", ["Standard (ProtParam)", "Deep Scan (Future Dev)"])
-    
-    st.radio("User Type", ["Academic", "Commercial"], index=0)
-    
-    delay_sec = st.number_input("Request Delay (sec)", min_value=0.5, value=1.0, step=0.5)
-
-# --- 5. MAIN PANEL ---
-col_spacer, col_main, col_spacer2 = st.columns([0.5, 4, 0.5])
-
-with col_main:
-    # 5.1. Header Section
-    st.image("https://web.expasy.org/images/expasy.png", width=120) # Logo placeholder
-    st.title("ProtParam Automation Suite")
-    st.markdown("""
-    Automated tool with **Real-time Processing**. Retrieves physicochemical data directly from ExPASy servers.
-    Data is processed securely in a headless browser environment.
-    """)
-    
-    st.markdown("---")
-
-    # 5.2. File Upload Section
-    st.subheader("Upload Protein FASTA File")
-    uploaded_file = st.file_uploader("", type=["fasta", "fa", "txt"], help="Drag and drop your FASTA file here")
-
-    # 5.3. Execution Logic
-    if uploaded_file and st.session_state.results is None:
-        sequences = read_fasta(uploaded_file)
-        st.info(f"📄 **{uploaded_file.name}** loaded. Contains {len(sequences)} sequences.")
+    # 2. Buton (Dosya varsa aktif olur)
+    if uploaded_file:
+        st.write("---")
+        if st.button("🚀 Analizi Başlat"):
+            st.session_state.running = True
         
-        if st.button("🚀 Start Analysis Pipeline", use_container_width=False):
-            results = []
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            try:
-                with st.spinner('Initializing Selenium WebDriver...'):
-                    driver = get_driver()
-                
-                for i, (header, seq) in enumerate(sequences):
-                    status_text.markdown(f"**Processing:** `{header[:30]}...`")
-                    prot_data = scrape_protparam(driver, seq)
-                    prot_data["Accession ID"] = header.split()[0]
-                    results.append(prot_data)
-                    progress_bar.progress((i + 1) / len(sequences))
-                    time.sleep(delay_sec) # Use the delay from sidebar
-                
-                driver.quit()
-                
-                # Save to Session State
-                st.session_state.results = pd.DataFrame(results)
-                st.session_state.history.append(datetime.now().strftime("%Y-%m-%d %H:%M"))
-                st.experimental_rerun()
-                
-            except Exception as e:
-                st.error(f"System Error: {e}")
-
-    # 5.4. Results Display (Only if results exist)
+    # Reset Butonu
     if st.session_state.results is not None:
-        df = st.session_state.results
-        
-        st.success("Analysis Complete.")
-        
-        # Summary Metrics
-        st.markdown("### 📊 Executive Summary")
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Mean MW", f"{df['Molecular Weight (Da)'].mean():.0f} Da")
-        m2.metric("Mean pI", f"{df['Theoretical pI'].mean():.2f}")
-        m3.metric("Stable Proteins", f"{len(df[df['Instability Index'] < 40])}")
-        m4.metric("Unstable Proteins", f"{len(df[df['Instability Index'] >= 40])}")
+        st.write("---")
+        if st.button("🔄 Sıfırla / Yeni Analiz"):
+            st.session_state.results = None
+            st.rerun()
 
-        # Data & Export
-        tab1, tab2 = st.tabs(["Data View", "Export"])
+    st.markdown("---")
+    st.caption("ProtParam Automation v1.2")
+
+# --- SAĞ PANEL (SONUÇ VE DASHBOARD KISMI) ---
+st.title("🧬 ProtParam Otomasyonu")
+st.markdown("Bu araç ExPASy sunucularını kullanarak yüklenen protein dizilerinin fizikokimyasal özelliklerini çıkarır.")
+st.divider()
+
+# Durum 1: Henüz dosya yüklenmedi veya başlatılmadı
+if not uploaded_file:
+    st.info("👈 Analize başlamak için lütfen sol menüden FASTA dosyası yükleyin.")
+
+# Durum 2: Analiz Çalışıyor (Sidebar butonuna basıldıysa)
+elif 'running' in st.session_state and st.session_state.running and st.session_state.results is None:
+    sequences = read_fasta(uploaded_file)
+    results = []
+    
+    # İlerleme Çubuğu (Ana ekranda)
+    progress_bar = st.progress(0)
+    status_box = st.empty()
+    
+    try:
+        with st.spinner('Tarayıcı başlatılıyor ve ExPASy sunucusuna bağlanılıyor...'):
+            driver = get_driver()
         
-        with tab1:
-            st.dataframe(df.style.highlight_max(axis=0), use_container_width=True)
+        for i, (header, seq) in enumerate(sequences):
+            status_box.markdown(f"**⏳ İşleniyor:** `{header[:40]}...` ({i+1}/{len(sequences)})")
             
-        with tab2:
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                df.to_excel(writer, index=False, sheet_name='Results')
+            prot_data = scrape_protparam(driver, seq)
+            prot_data["Accession ID"] = header.split()[0]
+            results.append(prot_data)
             
-            st.download_button(
-                label="📥 Download Excel Report",
-                data=buffer.getvalue(),
-                file_name="ProtParam_Results.xlsx",
-                mime="application/vnd.ms-excel",
-                type="primary"
-            )
+            progress_bar.progress((i + 1) / len(sequences))
+            
+        driver.quit()
+        st.session_state.results = pd.DataFrame(results)
+        st.session_state.running = False
+        st.rerun() # Sayfayı yenileyip sonuçları göster
+        
+    except Exception as e:
+        st.error(f"Sistem Hatası: {e}")
+        st.session_state.running = False
+
+# Durum 3: Sonuçlar Hazır
+if st.session_state.results is not None:
+    df = st.session_state.results
+    
+    st.success("✅ Analiz Başarıyla Tamamlandı.")
+    
+    # Dashboard Tarzı Özet Kartları
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Toplam Protein", len(df))
+    col2.metric("Ortalama MW", f"{df['Molecular Weight (Da)'].mean():.0f} Da")
+    col3.metric("Ortalama pI", f"{df['Theoretical pI'].mean():.2f}")
+    col4.metric("Ortalama GRAVY", f"{df['GRAVY'].mean():.3f}")
+    
+    st.divider()
+    
+    # Sekmeli Görünüm (Veri ve İndirme)
+    tab1, tab2 = st.tabs(["📄 Veri Tablosu", "📥 İndir"])
+    
+    with tab1:
+        st.dataframe(df.style.highlight_max(axis=0), use_container_width=True)
+        
+    with tab2:
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+            df.to_excel(writer, index=False, sheet_name='ProtParam Results')
+        
+        st.download_button(
+            label="📥 Excel Raporunu İndir",
+            data=buffer.getvalue(),
+            file_name="ProtParam_Results.xlsx",
+            mime="application/vnd.ms-excel"
+        )
