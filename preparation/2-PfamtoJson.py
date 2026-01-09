@@ -1,194 +1,150 @@
 import streamlit as st
 import pandas as pd
-import streamlit.components.v1 as components
-import urllib.parse # URL'deki boşlukları %20 yapmak için gerekli
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+import time
+import urllib.parse
+import io
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(
-    page_title="Insect Genome Pro",
-    page_icon="🦟",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="Gen Veri Robotu (Selenium)", page_icon="🧬", layout="wide")
 
-# --- CSS / STİL ---
-st.markdown("""
-<style>
-    .big-font { font-size:24px !important; font-weight: bold; color: #2c3e50; }
-    .status-ok { color: #27ae60; font-weight: bold; }
-    .status-wait { color: #f39c12; font-weight: bold; }
-</style>
-""", unsafe_allow_html=True)
-
-# --- JAVASCRIPT BİLEŞENİ (Kopyala ve Aç) ---
-def copy_and_open_button(text_to_copy, url_to_open, button_text="🚀 Kopyala ve Git"):
-    html_code = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-    <style>
-        .btn {{
-            background-color: #2980b9; 
-            border: none; color: white; padding: 16px 24px;
-            text-align: center; text-decoration: none;
-            display: block; font-size: 18px; margin: 0px;
-            cursor: pointer; border-radius: 8px; width: 100%;
-            font-family: 'Segoe UI', sans-serif; font-weight: 600;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            transition: all 0.2s;
-        }}
-        .btn:hover {{ background-color: #3498db; transform: translateY(-2px); }}
-        .btn:active {{ transform: translateY(0px); }}
-    </style>
-    </head>
-    <body>
-        <button class="btn" onclick="handleClick()">
-            {button_text}
-        </button>
-        <script>
-        function handleClick() {{
-            const text = `{text_to_copy}`;
-            const url = `{url_to_open}`;
-            
-            // Panoya Kopyala
-            const textArea = document.createElement("textarea");
-            textArea.value = text;
-            document.body.appendChild(textArea);
-            textArea.select();
-            try {{ document.execCommand('copy'); }} catch (err) {{}}
-            document.body.removeChild(textArea);
-            
-            // Yeni Sekmede Aç
-            window.open(url, '_blank');
-        }}
-        </script>
-    </body>
-    </html>
-    """
-    return components.html(html_code, height=80)
-
-# --- ANA UYGULAMA ---
-
-st.title("🦟 Insect Genome Çalışma Aracı")
-
-# --- SIDEBAR (AYARLAR) ---
-with st.sidebar:
-    st.header("📂 1. Dosya Yükle")
-    uploaded_file = st.file_uploader("Excel Listesi", type=['xlsx', 'xls', 'csv'])
+# --- SELENIUM AYARLARI (Streamlit Cloud İçin Kritik) ---
+def get_driver():
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")  # Arayüzsüz mod (Ekranda pencere açılmaz)
+    chrome_options.add_argument("--no-sandbox") # Cloud ortamı için gerekli
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
     
-    st.divider()
+    # Tarayıcıyı başlat
+    driver = webdriver.Chrome(options=chrome_options)
+    return driver
+
+# --- SCRAPING FONKSİYONU ---
+def fetch_data_with_selenium(species, gene_id):
+    driver = None
+    safe_species = urllib.parse.quote(species.strip())
+    safe_id = gene_id.strip()
+    url = f"https://www.insect-genome.com/gene/{safe_species}/{safe_id}"
     
-    st.header("⚙️ 2. URL Ayarları")
-    # Kullanıcının tür ismini girmesini istiyoruz
-    species_input = st.text_input("Tür Adı (Species)", value="musca domestica")
-    st.caption("Örn: `musca domestica`. Boşluklar otomatik olarak linke uygun hale getirilir.")
+    data = {
+        "Gen ID": gene_id,
+        "URL": url,
+        "Description": "Bulunamadı",
+        "JSON_Link": "-",
+        "Durum": "Başarısız"
+    }
 
-    st.divider()
-    st.info("Bu araç; yazdığınız tür adını ve Excel'deki ID'yi birleştirerek doğrudan gen sayfasına yönlendirir.")
-
-# --- MANTIK ---
-
-if uploaded_file is not None:
-    # State Yönetimi (Sayfa yenilenince veriler kaybolmasın)
-    if 'df' not in st.session_state or st.session_state.get('file_name') != uploaded_file.name:
+    try:
+        driver = get_driver()
+        driver.get(url)
+        
+        # Sayfanın yüklenmesi için bekle (Max 10 saniye)
+        wait = WebDriverWait(driver, 10)
+        
+        # 1. DESCRIPTION'ı ALMA (Resimde gördüğümüz yeşil alan)
         try:
-            if uploaded_file.name.endswith('.csv'):
-                df = pd.read_csv(uploaded_file)
+            # "Description" yazan başlığı bulmaya çalışıyoruz
+            # XPath: İçinde 'Description' yazan herhangi bir elementi bul
+            desc_element = wait.until(EC.presence_of_element_located((By.XPATH, "//*[contains(text(), 'Description')]")))
+            
+            # Genelde description yazısı bu başlığın hemen altındadır veya yanındadır.
+            # O yüzden bulunduğu div'in metnini almaya çalışalım.
+            parent = desc_element.find_element(By.XPATH, "..") # Bir üst kapsayıcıya çık
+            full_text = parent.text
+            
+            # "Description" kelimesini temizle
+            clean_desc = full_text.replace("Description", "").strip()
+            if clean_desc:
+                data["Description"] = clean_desc
+                data["Durum"] = "Başarılı"
+                
+        except:
+            data["Description"] = "Description Alanı Bulunamadı"
+
+        # 2. EXPORT JSON BUTONUNU BULMA
+        try:
+            # Butonun üzerinde "Export JSON" yazdığını resimden görüyoruz
+            json_btn = driver.find_element(By.XPATH, "//button[contains(text(), 'Export JSON')] | //a[contains(text(), 'Export JSON')]")
+            
+            # Eğer bu bir link ise (href varsa) alalım
+            link = json_btn.get_attribute("href")
+            if link:
+                data["JSON_Link"] = link
             else:
-                df = pd.read_excel(uploaded_file)
-            
-            st.session_state.df = df
-            st.session_state.file_name = uploaded_file.name
-            st.session_state.current_index = 0
-            st.session_state.processed_indices = set()
-            
-            # Sütun tahmini
-            cols = df.columns.tolist()
-            default_col = cols[0]
-            for col in cols:
-                if any(x in col.lower() for x in ['seq', 'id', 'gen', 'accession']):
-                    default_col = col
-                    break
-            st.session_state.target_col = default_col
-            
-        except Exception as e:
-            st.error(f"Dosya hatası: {e}")
+                data["JSON_Link"] = "Buton var ama link değil (JS Trigger)"
+                
+        except:
+            data["JSON_Link"] = "Buton Bulunamadı"
 
-    df = st.session_state.df
+    except Exception as e:
+        data["Durum"] = f"Hata: {str(e)}"
     
-    # Ana Ekran Düzeni
-    col_sel, col_info = st.columns([1, 2])
-    with col_sel:
-        target_col = st.selectbox("Hangi sütun Gen ID?", df.columns, index=df.columns.get_loc(st.session_state.target_col))
-    
-    # URL Parçalarını Hazırla
-    # Tür ismindeki boşlukları %20 yapar (musca domestica -> musca%20domestica)
-    encoded_species = urllib.parse.quote(species_input.strip())
-    
-    # --- SEKME YAPISI ---
-    tab_focus, tab_list = st.tabs(["🔍 Odak Modu (Sıralı)", "📋 Tüm Liste"])
+    finally:
+        if driver:
+            driver.quit() # Tarayıcıyı kapatmayı unutma
+            
+    return data
 
-    # 1. ODAK MODU
-    with tab_focus:
+# --- ARAYÜZ ---
+st.title("🧬 Insect Genome - Selenium Veri Kazıyıcı")
+st.markdown("""
+Bu versiyon **Selenium** kullanır. Sayfayı arka planda gerçekten açar, 
+Javascript'in yüklenmesini bekler ve ekrandaki veriyi okur.
+""")
+
+# Sidebar
+with st.sidebar:
+    st.header("Veri Girişi")
+    uploaded_file = st.file_uploader("Excel Yükle", type=['xlsx', 'xls'])
+    species_input = st.text_input("Tür (Species)", value="musca domestica")
+
+# Ana Akış
+if uploaded_file:
+    df = pd.read_excel(uploaded_file)
+    
+    # Sütun Seçimi
+    cols = df.columns.tolist()
+    target_col = st.selectbox("Gen ID Sütunu:", cols)
+    
+    if st.button("🚀 Taramayı Başlat", type="primary"):
+        results = []
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
         total = len(df)
-        curr = st.session_state.current_index
         
-        # Navigasyon
-        c_prev, c_prog, c_next = st.columns([1, 4, 1])
-        with c_prev:
-            if st.button("⬅️ Geri", use_container_width=True):
-                if curr > 0: st.session_state.current_index -= 1; st.rerun()
-        with c_next:
-            if st.button("İleri ➡️", use_container_width=True):
-                if curr < total - 1: st.session_state.current_index += 1; st.rerun()
-        with c_prog:
-            st.progress((curr + 1) / total, text=f"Sıra: {curr + 1} / {total}")
-
-        # Kart Gösterimi
-        st.markdown("---")
-        row = df.iloc[curr]
-        gene_id = str(row[target_col]).strip()
-        
-        # URL OLUŞTURMA (KRİTİK KISIM)
-        # Yapı: https://www.insect-genome.com/gene/musca%20domestica/Mdom002507.1
-        final_url = f"https://www.insect-genome.com/gene/{encoded_species}/{gene_id}"
-
-        col_card_L, col_card_R = st.columns([1, 1])
-        
-        with col_card_L:
-            st.caption("Mevcut Gen ID:")
-            st.markdown(f"<div class='big-font'>{gene_id}</div>", unsafe_allow_html=True)
-            st.text(f"Tür: {species_input}")
+        # Döngü
+        for i, row in df.iterrows():
+            g_id = str(row[target_col])
             
-            with st.expander("Satır Detayları"):
-                st.write(row.to_dict())
-
-        with col_card_R:
-            st.caption("İşlem:")
-            # JS Butonu
-            copy_and_open_button(gene_id, final_url)
+            status_text.text(f"Taranıyor ({i+1}/{total}): {g_id}")
             
-            # İncelendi Butonu
-            is_done = curr in st.session_state.processed_indices
-            if is_done:
-                st.success("✅ Bu gen incelendi.")
-            else:
-                if st.button("Tamamlandı İşaretle", key=f"btn_{curr}"):
-                    st.session_state.processed_indices.add(curr)
-                    st.rerun()
-
-    # 2. LİSTE GÖRÜNÜMÜ
-    with tab_list:
-        # İndirilebilir Rapor
-        st.write("Verilerinizi kontrol edin ve raporu indirin.")
+            # Selenium ile çek
+            scraped_data = fetch_data_with_selenium(species_input, g_id)
+            results.append(scraped_data)
+            
+            progress_bar.progress((i+1)/total)
+            # time.sleep(1) # Gerekirse bekleme süresi artırılabilir
+            
+        status_text.success("✅ İşlem Tamamlandı!")
         
-        preview_df = df.copy()
-        preview_df['Durum'] = ['✅ İncelendi' if i in st.session_state.processed_indices else '⏳ Bekliyor' for i in range(len(df))]
+        # Sonuçları Göster
+        res_df = pd.DataFrame(results)
+        st.dataframe(res_df)
         
-        st.dataframe(preview_df, use_container_width=True)
-        
-        csv_data = preview_df.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Raporu İndir (.csv)", csv_data, "gen_calisma_raporu.csv", "text/csv")
-
-else:
-    st.info("👈 Başlamak için soldan Excel dosyasını yükleyin.")
+        # İndir
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+            res_df.to_excel(writer, index=False)
+            
+        st.download_button(
+            label="📥 Sonuçları İndir (Excel)",
+            data=buffer.getvalue(),
+            file_name="selenium_gen_sonuclari.xlsx",
+            mime="application/vnd.ms-excel"
+        )
