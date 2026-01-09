@@ -1,184 +1,155 @@
 import streamlit as st
 from selenium import webdriver
-from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from bs4 import BeautifulSoup
-import openpyxl
+import pandas as pd
 import io
-import re
 import time
 
-# --- SAYFA AYARLARI ---
-st.set_page_config(page_title="ProtParam Otomasyon", page_icon="🧬")
+# --- 1. SELENIUM AYARLARI (CRITICAL FIX) ---
+def get_driver():
+    """Streamlit Cloud uyumlu Chrome Driver ayarları."""
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")  # Arayüzsüz mod (Zorunlu)
+    chrome_options.add_argument("--no-sandbox") 
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--window-size=1920,1080")
+    
+    driver = webdriver.Chrome(options=chrome_options)
+    return driver
 
-st.title("FASTA → ProtParam Otomasyonu")
-
-# --- MANUEL (BİLGİLENDİRME KUTUSU) ---
-st.warning("""
-**📌 Bu Araç Ne İşe Yarar?**
-
-1.  **Girdi:** Bilgisayarınızdan içinde protein dizileri olan bir **FASTA** dosyası seçersiniz.
-2.  **İşlem:** Araç, arka planda görünmez bir tarayıcı açar, **ExPASy ProtParam** sitesine bağlanır ve listedeki her protein için tek tek hesaplama yapar.
-3.  **Çıktı:** Moleküler Ağırlık, pI, GRAVY, Kararsızlık İndeksi gibi verileri toparlar ve **Excel** dosyası olarak indirmenizi sağlar.
-""")
-
-# --- YARDIMCI FONKSİYONLAR ---
-
-def read_fasta_content(file_content):
-    content = file_content.decode("utf-8")
+# --- 2. YARDIMCI FONKSİYONLAR ---
+def read_fasta(file):
+    """Yüklenen FASTA dosyasını okur ve (başlık, dizi) listesi döner."""
     sequences = []
-    title, seq = None, ''
+    content = file.getvalue().decode("utf-8")
+    header = None
+    sequence = []
+    
     for line in content.splitlines():
-        if line.startswith('>'):
-            if title and seq:
-                sequences.append((title, seq))
-            title = line.strip().lstrip('>')
-            seq = ''
+        line = line.strip()
+        if not line: continue
+        if line.startswith(">"):
+            if header:
+                sequences.append((header, "".join(sequence)))
+            header = line[1:] # '>' işaretini at
+            sequence = []
         else:
-            seq += line.strip()
-    if title and seq:
-        sequences.append((title, seq))
+            sequence.append(line)
+    if header:
+        sequences.append((header, "".join(sequence)))
+        
     return sequences
 
-def parse_second_pre_block(page_source):
-    soup = BeautifulSoup(page_source, "html.parser")
-    pre_blocks = soup.find_all("pre")
-    if len(pre_blocks) < 2:
-        # Eğer sonuç bulunamazsa hatayı anlamak için boş dön
-        return None
-
-    lines = list(pre_blocks[1].stripped_strings)
-
-    def extract_value(label):
-        for i, line in enumerate(lines):
-            if label in line:
-                if i + 1 < len(lines):
-                    return lines[i + 1].replace('"', '').strip()
-        return "Bulunamadı"
-
-    def extract_instability_index():
-        for line in lines:
-            if "The instability index" in line:
-                match = re.search(r"computed to be ([\d.]+)", line)
-                return match.group(1) if match else "Bulunamadı"
-        return "Bulunamadı"
-
-    def extract_stability():
-        for line in lines:
-            if "This classifies the protein as" in line:
-                if "unstable" in line.lower():
-                    return "Unstable"
-                elif "stable" in line.lower():
-                    return "Stable"
-        return "Bulunamadı"
-
-    num_aa = extract_value("Number of amino acids:")
-    mw = extract_value("Molecular weight:")
-    mw_kda = round(float(mw) / 1000, 3) if mw != "Bulunamadı" and mw != "Hata" else "Hata"
-    pI = extract_value("Theoretical pI:")
-    instability = extract_instability_index()
-    stability = extract_stability()
-    aliphatic = extract_value("Aliphatic index:")
-    gravy = extract_value("Grand average of hydropathicity")
-
-    return [num_aa, mw, mw_kda, pI, instability, stability, aliphatic, gravy]
-
-def get_protparam_results(sequence, driver):
-    driver.get("https://web.expasy.org/protparam/")
+def scrape_protparam(driver, sequence):
+    """Tek bir dizi için ExPASy ProtParam analizi yapar."""
+    url = "https://web.expasy.org/protparam/"
+    driver.get(url)
+    
     try:
-        # 1. Metin kutusunu bul
-        WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.NAME, "sequence")))
-        textarea = driver.find_element(By.NAME, "sequence")
-        textarea.clear()
-        textarea.send_keys(sequence)
-
-        # 2. Gönder butonuna bas
-        submit = driver.find_element(By.XPATH, "//input[@type='submit' and @value='Compute parameters']")
-        submit.click()
-
-        # 3. Sonuç sayfasının yüklenmesini bekle (Timeout süresi artırıldı)
-        WebDriverWait(driver, 20).until(lambda d: "<pre>" in d.page_source)
+        # Dizi kutusunu bul ve doldur
+        text_area = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.NAME, "sequence"))
+        )
+        text_area.clear()
+        text_area.send_keys(sequence)
         
-        result = parse_second_pre_block(driver.page_source)
-        if result is None:
-            return ["Site Yapısı Farklı"] * 8
-        return result
+        # 'Compute parameters' butonuna tıkla
+        submit_btn = driver.find_element(By.XPATH, "//input[@type='submit' and @value='Compute parameters']")
+        submit_btn.click()
+        
+        # Sonuçların yüklenmesini bekle (pre etiketi içinde gelir)
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.TAG_NAME, "pre"))
+        )
+        
+        # HTML'i al ve parse et
+        soup = BeautifulSoup(driver.page_source, "html.parser")
+        content = soup.find("pre").text
+        
+        # --- Basit Veri Çıkarma (Regex yerine basit split mantığı) ---
+        data = {}
+        lines = content.split('\n')
+        for line in lines:
+            if "Molecular weight:" in line:
+                data["Molecular Weight"] = line.split("Molecular weight:")[1].strip()
+            if "Theoretical pI:" in line:
+                data["Theoretical pI"] = line.split("Theoretical pI:")[1].strip()
+            if "Grand average of hydropathicity (GRAVY):" in line:
+                data["GRAVY"] = line.split("(GRAVY):")[1].strip()
+            if "Instability index:" in line:
+                 # Instability index satırını bazen yakalamak zordur, basit split
+                 parts = line.split("Instability index:")
+                 if len(parts) > 1:
+                     data["Instability Index"] = parts[1].split()[0].strip()
+
+        return data
 
     except Exception as e:
-        # Hata mesajını ekrana bas (Debugging için çok önemli)
-        st.error(f"Hata Detayı: {str(e)}")
-        return ["Hata"] * 8
+        return {"Hata": str(e)}
 
-# --- ARAYÜZ ---
+# --- 3. STREAMLIT ARAYÜZÜ ---
+st.set_page_config(page_title="ProtParam Otomasyon", page_icon="🧬")
 
-uploaded_file = st.file_uploader("FASTA Dosyasını Yükleyin", type=["fasta", "fa", "txt"])
+st.title("🧬 ProtParam Otomasyon Aracı")
+st.markdown("""
+Bu araç, FASTA dosyalarını okur ve her bir protein dizisi için **ExPASy ProtParam** sitesinden fiziksel ve kimyasal parametreleri çeker.
+""")
 
-if uploaded_file is not None:
+uploaded_file = st.file_uploader("FASTA Dosyası Yükleyin", type=["fasta", "fa", "txt"])
+
+if uploaded_file:
+    sequences = read_fasta(uploaded_file)
+    st.info(f"Toplam {len(sequences)} adet dizi bulundu. Analiz başlıyor...")
+    
     if st.button("Analizi Başlat"):
-        sequences = read_fasta_content(uploaded_file.getvalue())
-        st.info(f"Toplam {len(sequences)} dizi bulundu. İşlem başlıyor...")
-
+        results = []
         progress_bar = st.progress(0)
         status_text = st.empty()
-
-        # --- GÜÇLENDİRİLMİŞ SELENIUM AYARLARI ---
-        chrome_options = Options()
-        chrome_options.add_argument("--headless")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        # Siteyi kandırmak için Ekran Boyutu ve User-Agent ekliyoruz:
-        chrome_options.add_argument("--window-size=1920,1080")
-        chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
         
         try:
-            driver = webdriver.Chrome(options=chrome_options)
+            driver = get_driver() # Tarayıcıyı başlat
+            
+            for i, (header, seq) in enumerate(sequences):
+                status_text.text(f"İşleniyor ({i+1}/{len(sequences)}): {header[:30]}...")
+                
+                # Analizi yap
+                prot_data = scrape_protparam(driver, seq)
+                prot_data["Protein ID"] = header
+                results.append(prot_data)
+                
+                # İlerleme çubuğunu güncelle
+                progress_bar.progress((i + 1) / len(sequences))
+                
+            driver.quit() # Tarayıcıyı kapat
+            status_text.text("İşlem tamamlandı! 🎉")
+            
+            # --- Sonuçları Göster ve İndir ---
+            df = pd.DataFrame(results)
+            
+            # Sütun sırasını düzenle (ID en başta olsun)
+            cols = ["Protein ID"] + [c for c in df.columns if c != "Protein ID"]
+            df = df[cols]
+            
+            st.dataframe(df)
+            
+            # Excel İndirme Butonu
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+                df.to_excel(writer, index=False, sheet_name='Sonuclar')
+                
+            st.download_button(
+                label="📥 Excel Olarak İndir",
+                data=buffer.getvalue(),
+                file_name="protparam_results.xlsx",
+                mime="application/vnd.ms-excel"
+            )
+            
         except Exception as e:
-            st.error(f"Chrome Driver hatası: {e}")
-            st.stop()
-
-        all_results = []
-        
-        for i, (title, seq) in enumerate(sequences):
-            status_text.text(f"İşleniyor ({i+1}/{len(sequences)}): {title}")
-            
-            # Sonuçları çek
-            res = get_protparam_results(seq, driver)
-            
-            # Eğer hala Hata dönüyorsa ekrana uyarısını bas
-            if res[0] == "Hata":
-                st.warning(f"⚠️ '{title}' için veri çekilemedi. Site yanıt vermedi.")
-            
-            all_results.append([title] + res)
-            progress_bar.progress((i + 1) / len(sequences))
-            
-            # Spam korumasına takılmamak için biraz daha uzun bekle
-            time.sleep(2)
-
-        driver.quit()
-        status_text.success("✅ İşlem tamamlandı!")
-
-        # Excel Kaydetme
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.title = "ProtParam Results"
-        headers = [
-            "Sequence Name", "Number of Amino Acids", "Molecular Weight (Da)",
-            "Molecular Weight (kDa)", "Theoretical pI", "Instability Index",
-            "Stability", "Aliphatic Index", "GRAVY"
-        ]
-        ws.append(headers)
-        for row in all_results:
-            ws.append(row)
-        
-        excel_buffer = io.BytesIO()
-        wb.save(excel_buffer)
-        excel_buffer.seek(0)
-
-        st.download_button(
-            label="📥 Excel Dosyasını İndir",
-            data=excel_buffer,
-            file_name="protparam_sonuclar.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+            st.error(f"Beklenmeyen bir hata oluştu: {e}")
+            if 'driver' in locals():
+                driver.quit()
