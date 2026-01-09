@@ -91,7 +91,7 @@ st.divider()
 # --- SIDEBAR: CONFIGURATION ---
 with st.sidebar:
     st.header("1. Veri İçe Aktar")
-    uploaded_file = st.file_uploader("Manifest Dosyası (.xlsx)", type=['xlsx', 'xls'])
+    uploaded_file = st.file_uploader("Pfam İçeren Dosya (.xlsx)", type=['xlsx', 'xls'])
     
     st.divider()
     
@@ -320,4 +320,4 @@ if uploaded_file:
         )
 
 else:
-    st.info("Lütfen başlamak için sol menüden bir manifest dosyası yükleyin.")
+    st.info("Lütfen başlamak için sol menüden bir Pfam İçeren Excel dosyası yükleyin.")
