@@ -8,231 +8,224 @@ from bs4 import BeautifulSoup
 import pandas as pd
 import io
 import time
+from datetime import datetime
 
-# --- 1. SAYFA VE TASARIM AYARLARI ---
+# --- 1. CONFIGURATION & STATE MANAGEMENT ---
 st.set_page_config(
-    page_title="BioTools: ProtParam Analyzer",
+    page_title="ProtParam Automation Tool",
     page_icon="🧬",
-    layout="wide",  # Geniş ekran modu
+    layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Akademik CSS Düzenlemeleri
+# Initialize Session State for Data Persistence
+if 'results' not in st.session_state:
+    st.session_state.results = None
+if 'history' not in st.session_state:
+    st.session_state.history = []
+
+# --- 2. CUSTOM CSS (PHYRE2 STYLE) ---
 st.markdown("""
     <style>
-    .main {
-        background-color: #f8f9fa;
+    /* Sidebar Styling */
+    [data-testid="stSidebar"] {
+        background-color: #f4f6f9;
+        border-right: 1px solid #e0e0e0;
     }
-    .stButton>button {
-        width: 100%;
-        background-color: #2c3e50;
+    
+    /* Primary Button (Red/Pink like Phyre2) */
+    div.stButton > button:first-child {
+        background-color: #ff4b4b;
         color: white;
-        border-radius: 5px;
-        height: 3em;
+        border-radius: 6px;
+        border: none;
+        font-weight: 600;
+        padding: 0.5rem 1rem;
     }
-    .metric-card {
-        background-color: #ffffff;
-        border: 1px solid #e0e0e0;
-        padding: 15px;
-        border-radius: 5px;
-        box-shadow: 2px 2px 5px rgba(0,0,0,0.05);
+    div.stButton > button:first-child:hover {
+        background-color: #ff3333;
+        color: white;
+    }
+
+    /* Secondary Buttons (Gray) */
+    .secondary-button {
+        background-color: #6c757d;
+    }
+
+    /* Card Styling */
+    .css-1r6slb0 {
+        background-color: white;
+        padding: 2rem;
+        border-radius: 10px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+    }
+    
+    /* Header Styling */
+    h1 {
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        color: #2c3e50;
+        font-weight: 700;
     }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. SELENIUM AYARLARI ---
+# --- 3. SELENIUM BACKEND ---
 def get_driver():
-    """Streamlit Cloud uyumlu Headless Chrome Driver."""
+    """Headless Chrome Driver for Streamlit Cloud."""
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1080")
-    
-    driver = webdriver.Chrome(options=chrome_options)
-    return driver
+    return webdriver.Chrome(options=chrome_options)
 
-# --- 3. YARDIMCI FONKSİYONLAR ---
 def read_fasta(file):
     sequences = []
     content = file.getvalue().decode("utf-8")
     header = None
     sequence = []
-    
     for line in content.splitlines():
         line = line.strip()
         if not line: continue
         if line.startswith(">"):
-            if header:
-                sequences.append((header, "".join(sequence)))
+            if header: sequences.append((header, "".join(sequence)))
             header = line[1:]
             sequence = []
-        else:
-            sequence.append(line)
-    if header:
-        sequences.append((header, "".join(sequence)))
-        
+        else: sequence.append(line)
+    if header: sequences.append((header, "".join(sequence)))
     return sequences
 
 def scrape_protparam(driver, sequence):
     url = "https://web.expasy.org/protparam/"
     driver.get(url)
-    
     try:
-        text_area = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.NAME, "sequence"))
-        )
-        text_area.clear()
-        text_area.send_keys(sequence)
-        
-        submit_btn = driver.find_element(By.XPATH, "//input[@type='submit' and @value='Compute parameters']")
-        submit_btn.click()
-        
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.TAG_NAME, "pre"))
-        )
-        
+        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.NAME, "sequence"))).send_keys(sequence)
+        driver.find_element(By.XPATH, "//input[@type='submit' and @value='Compute parameters']").click()
+        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "pre")))
         soup = BeautifulSoup(driver.page_source, "html.parser")
         content = soup.find("pre").text
         
         data = {}
         lines = content.split('\n')
         for line in lines:
-            if "Molecular weight:" in line:
-                data["Molecular Weight (Da)"] = float(line.split("Molecular weight:")[1].strip())
-            if "Theoretical pI:" in line:
-                data["Theoretical pI"] = float(line.split("Theoretical pI:")[1].strip())
-            if "Grand average of hydropathicity (GRAVY):" in line:
-                data["GRAVY"] = float(line.split("(GRAVY):")[1].strip())
+            if "Molecular weight:" in line: data["Molecular Weight (Da)"] = float(line.split("Molecular weight:")[1].strip())
+            if "Theoretical pI:" in line: data["Theoretical pI"] = float(line.split("Theoretical pI:")[1].strip())
+            if "Grand average of hydropathicity (GRAVY):" in line: data["GRAVY"] = float(line.split("(GRAVY):")[1].strip())
             if "Instability index:" in line:
                  parts = line.split("Instability index:")
-                 if len(parts) > 1:
-                     data["Instability Index"] = float(parts[1].split()[0].strip())
-
+                 if len(parts) > 1: data["Instability Index"] = float(parts[1].split()[0].strip())
         return data
-    except Exception as e:
-        return {"Error": str(e)}
+    except Exception as e: return {"Error": str(e)}
 
-# --- 4. ARAYÜZ (SIDEBAR) ---
+# --- 4. SIDEBAR (CONTROLS) ---
 with st.sidebar:
-    st.image("https://web.expasy.org/images/expasy.png", width=150) # Expasy Logo temsili
-    st.header("Hakkında")
-    st.info("""
-    Bu araç, protein dizilerinin fizikokimyasal özelliklerini **ExPASy ProtParam** algoritması kullanarak otomatik olarak hesaplar.
-    """)
-    
+    # 4.1. Reset Button
+    if st.button("🔄 New Analysis / Reset", use_container_width=True):
+        st.session_state.results = None
+        st.experimental_rerun()
+
     st.markdown("---")
-    st.subheader("🛠 Metodoloji")
-    st.markdown("""
-    1. **Girdi:** FASTA formatlı protein dizileri.
-    2. **İşlem:** Selenium WebDriver ile ProtParam sunucusuna bağlanılır.
-    3. **Çıktı:** Moleküler ağırlık, izoelektrik nokta (pI), kararlılık indeksi ve GRAVY skorları.
-    """)
     
-    st.markdown("---")
-    st.caption("Developed for Scientific Research")
-    st.caption("v1.2.0 | Stable Build")
-
-# --- 5. ANA PANEL ---
-st.title("🧬 High-Throughput ProtParam Analyzer")
-st.markdown("### Fizikokimyasal Protein Karakterizasyonu")
-st.markdown("---")
-
-col1, col2 = st.columns([2, 1])
-
-with col1:
-    uploaded_file = st.file_uploader("📂 Analiz için FASTA dosyanızı yükleyin", type=["fasta", "fa", "txt"])
-
-with col2:
-    st.write("#### ⚡ Hızlı Bakış")
-    if uploaded_file:
-        sequences = read_fasta(uploaded_file)
-        st.success(f"✅ Dosya Yüklendi: {len(sequences)} dizi tespit edildi.")
+    # 4.2. Analysis History (Visual Mockup)
+    st.markdown("#### 📂 Analysis Sessions")
+    if len(st.session_state.history) == 0:
+        st.caption("No history available.")
     else:
-        st.info("Lütfen analize başlamak için sol taraftan dosya yükleyin.")
+        for item in st.session_state.history[-3:]: # Show last 3
+            st.text(f"🕒 {item}")
 
-# --- ANALİZ BÖLÜMÜ ---
-if uploaded_file and st.button("🚀 Analizi Başlat", help="Analiz süresi dizi sayısına göre değişebilir."):
-    results = []
+    st.markdown("---")
+
+    # 4.3. Configuration
+    st.markdown("#### ⚙️ Configuration")
+    user_email = st.text_input("E-mail Address (Optional)", placeholder="researcher@university.edu")
     
-    # İlerleme Çubuğu ve Durum
-    progress_bar = st.progress(0)
-    status_text = st.empty()
+    analysis_mode = st.selectbox("Analysis Mode", ["Standard (ProtParam)", "Deep Scan (Future Dev)"])
     
-    try:
-        with st.spinner('Laboratuvar ortamı hazırlanıyor ve ExPASy sunucularına bağlanılıyor...'):
-            driver = get_driver()
-            
-        for i, (header, seq) in enumerate(sequences):
-            status_text.markdown(f"**İşleniyor:** `{header}` ({i+1}/{len(sequences)})")
-            
-            prot_data = scrape_protparam(driver, seq)
-            prot_data["Accession ID"] = header.split()[0] # Genellikle ilk kelime ID'dir
-            prot_data["Full Header"] = header
-            results.append(prot_data)
-            
-            progress_bar.progress((i + 1) / len(sequences))
-            
-        driver.quit()
-        status_text.success("Analiz başarıyla tamamlandı!")
+    st.radio("User Type", ["Academic", "Commercial"], index=0)
+    
+    delay_sec = st.number_input("Request Delay (sec)", min_value=0.5, value=1.0, step=0.5)
+
+# --- 5. MAIN PANEL ---
+col_spacer, col_main, col_spacer2 = st.columns([0.5, 4, 0.5])
+
+with col_main:
+    # 5.1. Header Section
+    st.image("https://web.expasy.org/images/expasy.png", width=120) # Logo placeholder
+    st.title("ProtParam Automation Suite")
+    st.markdown("""
+    Automated tool with **Real-time Processing**. Retrieves physicochemical data directly from ExPASy servers.
+    Data is processed securely in a headless browser environment.
+    """)
+    
+    st.markdown("---")
+
+    # 5.2. File Upload Section
+    st.subheader("Upload Protein FASTA File")
+    uploaded_file = st.file_uploader("", type=["fasta", "fa", "txt"], help="Drag and drop your FASTA file here")
+
+    # 5.3. Execution Logic
+    if uploaded_file and st.session_state.results is None:
+        sequences = read_fasta(uploaded_file)
+        st.info(f"📄 **{uploaded_file.name}** loaded. Contains {len(sequences)} sequences.")
         
-        # --- SONUÇLARI GÖSTERME ---
-        df = pd.DataFrame(results)
+        if st.button("🚀 Start Analysis Pipeline", use_container_width=False):
+            results = []
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            try:
+                with st.spinner('Initializing Selenium WebDriver...'):
+                    driver = get_driver()
+                
+                for i, (header, seq) in enumerate(sequences):
+                    status_text.markdown(f"**Processing:** `{header[:30]}...`")
+                    prot_data = scrape_protparam(driver, seq)
+                    prot_data["Accession ID"] = header.split()[0]
+                    results.append(prot_data)
+                    progress_bar.progress((i + 1) / len(sequences))
+                    time.sleep(delay_sec) # Use the delay from sidebar
+                
+                driver.quit()
+                
+                # Save to Session State
+                st.session_state.results = pd.DataFrame(results)
+                st.session_state.history.append(datetime.now().strftime("%Y-%m-%d %H:%M"))
+                st.experimental_rerun()
+                
+            except Exception as e:
+                st.error(f"System Error: {e}")
+
+    # 5.4. Results Display (Only if results exist)
+    if st.session_state.results is not None:
+        df = st.session_state.results
         
-        # Sütun düzenleme
-        main_cols = ["Accession ID", "Molecular Weight (Da)", "Theoretical pI", "Instability Index", "GRAVY"]
-        df = df[main_cols] # Sadece önemli sütunları al
+        st.success("Analysis Complete.")
         
-        st.markdown("---")
-        
-        # 1. ÖZET İSTATİSTİKLER (METRICS)
+        # Summary Metrics
+        st.markdown("### 📊 Executive Summary")
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Ortalama MW (Da)", f"{df['Molecular Weight (Da)'].mean():.2f}")
-        m2.metric("Ortalama pI", f"{df['Theoretical pI'].mean():.2f}")
-        m3.metric("Ortalama Kararlılık", f"{df['Instability Index'].mean():.2f}")
-        m4.metric("Ortalama GRAVY", f"{df['GRAVY'].mean():.3f}")
-        
-        st.markdown("---")
+        m1.metric("Mean MW", f"{df['Molecular Weight (Da)'].mean():.0f} Da")
+        m2.metric("Mean pI", f"{df['Theoretical pI'].mean():.2f}")
+        m3.metric("Stable Proteins", f"{len(df[df['Instability Index'] < 40])}")
+        m4.metric("Unstable Proteins", f"{len(df[df['Instability Index'] >= 40])}")
 
-        # 2. DETAYLI SEKMELER
-        tab1, tab2, tab3 = st.tabs(["📊 Veri Tablosu", "📈 Parametre Açıklamaları", "📥 İndirme"])
+        # Data & Export
+        tab1, tab2 = st.tabs(["Data View", "Export"])
         
         with tab1:
-            st.subheader("Analiz Sonuçları")
-            # Pandas Styler ile renklendirme (Bilimsel görünüm)
-            st.dataframe(
-                df.style.background_gradient(subset=["Theoretical pI"], cmap="viridis")
-                        .format("{:.2f}", subset=["Molecular Weight (Da)", "Instability Index", "GRAVY"]),
-                use_container_width=True
-            )
+            st.dataframe(df.style.highlight_max(axis=0), use_container_width=True)
             
         with tab2:
-            st.markdown("""
-            #### Bilimsel Parametrelerin Anlamları
-            
-            * **Molecular Weight (Da):** Protein zincirindeki atomların toplam ağırlığıdır. Elektroforez (SDS-PAGE) analizlerinde referans olarak kullanılır.
-            * **Theoretical pI (İzoelektrik Nokta):** Proteinin net yükünün sıfır olduğu pH değeridir. Protein saflaştırma stratejilerinde kritiktir.
-            * **Instability Index (II):** Proteinin test tüpünde ne kadar kararlı olacağını tahmin eder.
-                * *II < 40:* Kararlı (Stable)
-                * *II > 40:* Kararsız (Unstable)
-            * **GRAVY (Grand Average of Hydropathy):** Hidrofobiklik derecesini gösterir. Pozitif değerler hidrofobik, negatif değerler hidrofilik karakteri işaret eder.
-            """)
-            
-        with tab3:
-            st.subheader("Verileri Dışa Aktar")
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                df.to_excel(writer, index=False, sheet_name='ProtParam Results')
-                
+                df.to_excel(writer, index=False, sheet_name='Results')
+            
             st.download_button(
-                label="📥 Excel Raporunu İndir (.xlsx)",
+                label="📥 Download Excel Report",
                 data=buffer.getvalue(),
-                file_name="ProtParam_Analysis_Report.xlsx",
-                mime="application/vnd.ms-excel"
+                file_name="ProtParam_Results.xlsx",
+                mime="application/vnd.ms-excel",
+                type="primary"
             )
-
-    except Exception as e:
-        st.error(f"Kritik Hata: {e}")
-        if 'driver' in locals():
-            driver.quit()
