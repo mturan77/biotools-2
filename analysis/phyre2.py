@@ -142,7 +142,7 @@ with st.sidebar:
 
     st.markdown("---")
     st.subheader("Configuration")
-    email = st.text_input("E-mail Address", value="muratturan077@gmail.com")
+    email = st.text_input("E-mail Address", value="you must write an e-mail")
     mode = st.selectbox("Modelling Mode", ["normal", "intensive"])
     user_type = st.radio("User Type", ["Academic", "Commercial"], index=0)
     bekleme_suresi = st.number_input("Delay (sec)", 0.5, 30.0, 2.0, 0.1)
