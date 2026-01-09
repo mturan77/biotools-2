@@ -9,7 +9,7 @@ import pandas as pd
 import io
 import time
 
-# --- 1. AYARLAR VE STİL (PHYRE2 TASARIM MANTIĞI) ---
+# --- 1. CONFIGURATION & STYLING ---
 st.set_page_config(
     page_title="ProtParam Analyzer",
     page_icon="🧬",
@@ -17,19 +17,21 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Session State (Verilerin kaybolmaması için)
+# Session State
 if 'results' not in st.session_state:
     st.session_state.results = None
+if 'running' not in st.session_state:
+    st.session_state.running = False
 
-# CSS: Phyre2 benzeri temiz sol menü ve kırmızı butonlar
+# CSS: Phyre2 Style (Clean Sidebar & Red Buttons)
 st.markdown("""
     <style>
-    /* Sol Menü Arka Planı */
+    /* Sidebar Background */
     [data-testid="stSidebar"] {
-        background-color: #f0f2f6;
+        background-color: #f4f6f9;
         border-right: 1px solid #d1d5db;
     }
-    /* Buton Tasarımı (Phyre2 kırmızısı) */
+    /* Primary Red Button */
     div.stButton > button {
         width: 100%;
         background-color: #dc3545;
@@ -43,7 +45,7 @@ st.markdown("""
         background-color: #bb2d3b;
         color: white;
     }
-    /* Kart Görünümü */
+    /* Metric Cards */
     .metric-container {
         background-color: white;
         padding: 15px;
@@ -54,9 +56,9 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. BACKEND (SENİN KODUN) ---
+# --- 2. BACKEND LOGIC ---
 def get_driver():
-    """Streamlit Cloud uyumlu Headless Driver"""
+    """Headless Driver for Streamlit Cloud"""
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
@@ -82,76 +84,93 @@ def read_fasta(file):
 
 def scrape_protparam(driver, sequence):
     url = "https://web.expasy.org/protparam/"
-    driver.get(url)
+    
+    # Initialize dictionary with None to prevent KeyError later
+    data = {
+        "Molecular Weight (Da)": None,
+        "Theoretical pI": None,
+        "GRAVY": None,
+        "Instability Index": None,
+        "Error": None
+    }
+    
     try:
+        driver.get(url)
         WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.NAME, "sequence"))).send_keys(sequence)
         driver.find_element(By.XPATH, "//input[@type='submit' and @value='Compute parameters']").click()
         WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "pre")))
+        
         soup = BeautifulSoup(driver.page_source, "html.parser")
         content = soup.find("pre").text
         
-        data = {}
         lines = content.split('\n')
         for line in lines:
-            if "Molecular weight:" in line: data["Molecular Weight (Da)"] = float(line.split("Molecular weight:")[1].strip())
-            if "Theoretical pI:" in line: data["Theoretical pI"] = float(line.split("Theoretical pI:")[1].strip())
-            if "Grand average of hydropathicity (GRAVY):" in line: data["GRAVY"] = float(line.split("(GRAVY):")[1].strip())
+            if "Molecular weight:" in line: 
+                try: data["Molecular Weight (Da)"] = float(line.split("Molecular weight:")[1].strip())
+                except: pass
+            if "Theoretical pI:" in line: 
+                try: data["Theoretical pI"] = float(line.split("Theoretical pI:")[1].strip())
+                except: pass
+            if "Grand average of hydropathicity (GRAVY):" in line: 
+                try: data["GRAVY"] = float(line.split("(GRAVY):")[1].strip())
+                except: pass
             if "Instability index:" in line:
                  parts = line.split("Instability index:")
-                 if len(parts) > 1: data["Instability Index"] = float(parts[1].split()[0].strip())
+                 if len(parts) > 1: 
+                     try: data["Instability Index"] = float(parts[1].split()[0].strip())
+                     except: pass
         return data
-    except Exception as e: return {"Error": str(e)}
+        
+    except Exception as e: 
+        data["Error"] = str(e)
+        return data
 
-# --- 3. ARAYÜZ (PHYRE2 LAYOUT) ---
+# --- 3. UI LAYOUT ---
 
-# --- SOL PANEL (INPUT KISMI) ---
+# --- SIDEBAR ---
 with st.sidebar:
-    st.title("⚙️ Kontrol Paneli")
-    st.markdown("Analiz dosyasını buradan yükleyip başlatabilirsin.")
+    st.title("⚙️ Control Panel")
+    st.markdown("Upload your FASTA file here.")
     
-    # 1. Dosya Yükleme (Phyre2 stili solda)
-    uploaded_file = st.file_uploader("FASTA Dosyası Seç", type=["fasta", "fa", "txt"])
+    uploaded_file = st.file_uploader("Select FASTA File", type=["fasta", "fa", "txt"])
     
-    # 2. Buton (Dosya varsa aktif olur)
     if uploaded_file:
         st.write("---")
-        if st.button("🚀 Analizi Başlat"):
+        if st.button("🚀 Start Analysis"):
             st.session_state.running = True
         
-    # Reset Butonu
     if st.session_state.results is not None:
         st.write("---")
-        if st.button("🔄 Sıfırla / Yeni Analiz"):
+        if st.button("🔄 Reset Analysis"):
             st.session_state.results = None
             st.rerun()
 
     st.markdown("---")
-    st.caption("ProtParam Automation v1.2")
+    st.caption("ProtParam Automation v1.3 (Stable)")
 
-# --- SAĞ PANEL (SONUÇ VE DASHBOARD KISMI) ---
-st.title("🧬 ProtParam Otomasyonu")
-st.markdown("Bu araç ExPASy sunucularını kullanarak yüklenen protein dizilerinin fizikokimyasal özelliklerini çıkarır.")
+# --- MAIN PANEL ---
+st.title("🧬 ProtParam Automation Tool")
+st.markdown("Automated physicochemical property extraction from **ExPASy ProtParam**.")
 st.divider()
 
-# Durum 1: Henüz dosya yüklenmedi veya başlatılmadı
+# Case 1: No File
 if not uploaded_file:
-    st.info("👈 Analize başlamak için lütfen sol menüden FASTA dosyası yükleyin.")
+    st.info("👈 Please upload a FASTA file from the left sidebar.")
 
-# Durum 2: Analiz Çalışıyor (Sidebar butonuna basıldıysa)
-elif 'running' in st.session_state and st.session_state.running and st.session_state.results is None:
+# Case 2: Running
+elif st.session_state.running and st.session_state.results is None:
     sequences = read_fasta(uploaded_file)
     results = []
     
-    # İlerleme Çubuğu (Ana ekranda)
     progress_bar = st.progress(0)
     status_box = st.empty()
     
     try:
-        with st.spinner('Tarayıcı başlatılıyor ve ExPASy sunucusuna bağlanılıyor...'):
+        with st.spinner('Connecting to ExPASy server...'):
             driver = get_driver()
         
         for i, (header, seq) in enumerate(sequences):
-            status_box.markdown(f"**⏳ İşleniyor:** `{header[:40]}...` ({i+1}/{len(sequences)})")
+            status_box.markdown(f"**⏳ Processing:** `{header[:40]}...` ({i+1}/{len(sequences)})")
             
             prot_data = scrape_protparam(driver, seq)
             prot_data["Accession ID"] = header.split()[0]
@@ -162,29 +181,45 @@ elif 'running' in st.session_state and st.session_state.running and st.session_s
         driver.quit()
         st.session_state.results = pd.DataFrame(results)
         st.session_state.running = False
-        st.rerun() # Sayfayı yenileyip sonuçları göster
+        st.rerun()
         
     except Exception as e:
-        st.error(f"Sistem Hatası: {e}")
+        st.error(f"System Error: {e}")
         st.session_state.running = False
 
-# Durum 3: Sonuçlar Hazır
+# Case 3: Results
 if st.session_state.results is not None:
     df = st.session_state.results
     
-    st.success("✅ Analiz Başarıyla Tamamlandı.")
+    st.success("✅ Analysis Completed.")
     
-    # Dashboard Tarzı Özet Kartları
+    # SAFE METRIC CALCULATION (Prevents KeyError)
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Toplam Protein", len(df))
-    col2.metric("Ortalama MW", f"{df['Molecular Weight (Da)'].mean():.0f} Da")
-    col3.metric("Ortalama pI", f"{df['Theoretical pI'].mean():.2f}")
-    col4.metric("Ortalama GRAVY", f"{df['GRAVY'].mean():.3f}")
+    
+    col1.metric("Total Sequences", len(df))
+    
+    # Calculate means only if columns exist and have data
+    if "Molecular Weight (Da)" in df.columns and df["Molecular Weight (Da)"].notna().any():
+        mw_mean = df["Molecular Weight (Da)"].mean()
+        col2.metric("Mean MW", f"{mw_mean:.0f} Da")
+    else:
+        col2.metric("Mean MW", "N/A")
+
+    if "Theoretical pI" in df.columns and df["Theoretical pI"].notna().any():
+        pi_mean = df["Theoretical pI"].mean()
+        col3.metric("Mean pI", f"{pi_mean:.2f}")
+    else:
+        col3.metric("Mean pI", "N/A")
+
+    if "GRAVY" in df.columns and df["GRAVY"].notna().any():
+        gravy_mean = df["GRAVY"].mean()
+        col4.metric("Mean GRAVY", f"{gravy_mean:.3f}")
+    else:
+        col4.metric("Mean GRAVY", "N/A")
     
     st.divider()
     
-    # Sekmeli Görünüm (Veri ve İndirme)
-    tab1, tab2 = st.tabs(["📄 Veri Tablosu", "📥 İndir"])
+    tab1, tab2 = st.tabs(["📄 Data Table", "📥 Export"])
     
     with tab1:
         st.dataframe(df.style.highlight_max(axis=0), use_container_width=True)
@@ -195,7 +230,7 @@ if st.session_state.results is not None:
             df.to_excel(writer, index=False, sheet_name='ProtParam Results')
         
         st.download_button(
-            label="📥 Excel Raporunu İndir",
+            label="📥 Download Excel Report",
             data=buffer.getvalue(),
             file_name="ProtParam_Results.xlsx",
             mime="application/vnd.ms-excel"
