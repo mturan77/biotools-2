@@ -6,43 +6,68 @@ import re
 import pandas as pd
 from datetime import datetime
 import os
+import json 
+import uuid 
 
 # Sayfa Ayarları (Wide mode)
-st.set_page_config(page_title="Phyre2 Analysis Tool", page_icon="🧬", layout="wide")
+st.set_page_config(page_title="Phyre2 Pro Suite", page_icon="🧬", layout="wide")
 
-# --- CSS İLE PROFESYONEL GÖRÜNÜM ---
+# --- CSS DÜZELTMESİ ---
+# BURASI DEĞİŞTİ: 'header { visibility: hidden; }' satırını sildik.
+# Artık üst menü ve STOP butonu görünecek.
 st.markdown("""
     <style>
     .stButton>button { width: 100%; border-radius: 5px; }
     .reportview-container { background: #fdfdfd; }
-    header { visibility: hidden; }
+    
+    /* Delete butonu için özel stil */
+    div[data-testid="stExpander"] {
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        margin-bottom: 10px;
+    }
     </style>
 """, unsafe_allow_html=True)
 
 # --- AYARLAR ---
-HISTORY_FILE = "phyre_history.csv"
-MAX_HISTORY = 50
+HISTORY_FILE = "phyre_sessions.json" 
+MAX_HISTORY = 10 
 
-# --- GEÇMİŞ YÖNETİMİ ---
+# --- GEÇMİŞ YÖNETİMİ (JSON) ---
 def load_history():
     if os.path.exists(HISTORY_FILE):
-        return pd.read_csv(HISTORY_FILE)
+        try:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            return []
     else:
-        return pd.DataFrame(columns=["Tarih", "Protein", "Job_ID", "Link"])
+        return []
 
-def save_to_history(protein_name, job_id, link):
-    df = load_history()
-    tarih = datetime.now().strftime("%Y-%m-%d %H:%M")
-    new_row = pd.DataFrame([{
-        "Tarih": tarih,
-        "Protein": protein_name,
-        "Job_ID": job_id,
-        "Link": link
-    }])
-    df = pd.concat([new_row, df], ignore_index=True)
-    if len(df) > MAX_HISTORY:
-        df = df.head(MAX_HISTORY)
-    df.to_csv(HISTORY_FILE, index=False)
+def save_session(filename, results_list):
+    history = load_history()
+    new_session = {
+        "id": str(uuid.uuid4()),
+        "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "filename": filename,
+        "count": len(results_list),
+        "data": results_list
+    }
+    history.insert(0, new_session)
+    if len(history) > MAX_HISTORY:
+        history = history[:MAX_HISTORY]
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(history, f, ensure_ascii=False, indent=4)
+
+def delete_session(session_id):
+    history = load_history()
+    history = [s for s in history if s["id"] != session_id]
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(history, f, ensure_ascii=False, indent=4)
+
+def clear_all_history():
+    if os.path.exists(HISTORY_FILE):
+        os.remove(HISTORY_FILE)
 
 # --- SIFIRLAMA ---
 if 'uploader_key' not in st.session_state:
@@ -53,7 +78,7 @@ def reset_app():
 
 # --- BAŞLIK ---
 st.title("🧬 Phyre2 Protein Modelling Automation")
-st.markdown("Automated submission tool for high-throughput protein structure prediction.")
+st.markdown("Automated submission tool with **Grouped History** management.")
 st.divider()
 
 # --- SIDEBAR (Geçmiş) ---
@@ -61,34 +86,48 @@ with st.sidebar:
     st.button("🔄 New Analysis / Reset", on_click=reset_app, type="primary")
     st.markdown("---")
     
-    st.subheader("📜 Analysis History")
-    history_placeholder = st.empty()
-
-    def render_sidebar_history():
-        history_df = load_history()
-        with history_placeholder.container():
-            if not history_df.empty:
-                # Profesyonel Tablo Görünümü
+    st.subheader("📂 Analysis Sessions")
+    
+    history_data = load_history()
+    
+    if history_data:
+        if st.button("🗑️ Delete All History", type="secondary"):
+            clear_all_history()
+            st.rerun()
+            
+        st.markdown("---")
+        
+        for session in history_data:
+            expander_title = f"📅 {session['date']} | 📄 {session['filename']} ({session['count']})"
+            
+            with st.expander(expander_title):
+                df_session = pd.DataFrame(session['data'])
                 st.dataframe(
-                    history_df,
+                    df_session,
                     column_config={
-                        "Link": st.column_config.LinkColumn(
-                            "Result", display_text="Open Link"
-                        ),
-                        "Tarih": st.column_config.TextColumn("Date", width="small"),
-                        "Protein": st.column_config.TextColumn("Protein ID"),
-                        # --- GÜNCELLEME: Job ID artık görünür ---
-                        "Job_ID": st.column_config.TextColumn("Job ID", width="medium"),
+                        "Result Link": st.column_config.LinkColumn("Result", display_text="Open"),
+                        "Job ID": st.column_config.TextColumn("ID", width="small"),
+                        "Status": st.column_config.TextColumn("Stat", width="small"),
                     },
                     hide_index=True,
                     use_container_width=True
                 )
-                csv_history = history_df.to_csv(index=False).encode('utf-8')
-                st.download_button("💾 Download History (CSV)", csv_history, "analysis_history.csv", "text/csv")
-            else:
-                st.caption("No history available.")
+                
+                csv_session = df_session.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    "💾 Download CSV", 
+                    csv_session, 
+                    f"{session['filename']}_results.csv", 
+                    "text/csv",
+                    key=f"dl_{session['id']}"
+                )
+                
+                if st.button("❌ Delete This Session", key=f"del_{session['id']}"):
+                    delete_session(session['id'])
+                    st.rerun()
 
-    render_sidebar_history()
+    else:
+        st.caption("No history available.")
 
     st.markdown("---")
     st.subheader("Configuration")
@@ -120,7 +159,7 @@ if uploaded_file and email:
         progress_bar = st.progress(0)
         status_text = st.empty()
         
-        st.subheader("Analysis Log")
+        st.subheader("Current Analysis Log")
         result_placeholder = st.empty()
         current_results = [] 
 
@@ -150,7 +189,7 @@ if uploaded_file and email:
             
             status_code = "Pending"
             result_link = ""
-            current_job_id = "-" # Varsayılan boş ID
+            current_job_id = "-"
             
             try:
                 response = requests.post(url, data=payload, headers=headers_http, timeout=45)
@@ -161,11 +200,8 @@ if uploaded_file and email:
                     job_match = re.search(r"jobid=([a-zA-Z0-9]+)", response.text)
                     if job_match:
                         job_id = job_match.group(1)
-                        current_job_id = job_id # ID'yi yakaladık
+                        current_job_id = job_id
                         monitor_link = f"http://www.sbg.bio.ic.ac.uk/phyre2/webscripts/jobmonitor-harry.cgi?jobid={job_id}"
-                        
-                        save_to_history(header, job_id, monitor_link)
-                        render_sidebar_history() 
                         
                         status_code = "Completed"
                         result_link = monitor_link
@@ -177,26 +213,21 @@ if uploaded_file and email:
             except Exception as e:
                 status_code = "Connection Error"
             
-            # --- TABLO VERİSİNE JOB ID EKLENDİ ---
             current_results.append({
-                "Index": i+1,
                 "Protein ID": header,
-                "Job ID": current_job_id, # Yeni Sütun
+                "Job ID": current_job_id,
                 "Status": status_code,
                 "Result Link": result_link
             })
             
-            # CANLI TABLOYU GÜNCELLE
             df_live = pd.DataFrame(current_results)
             with result_placeholder.container():
                 st.dataframe(
                     df_live,
                     column_config={
-                        "Result Link": st.column_config.LinkColumn(
-                            "Access", display_text="View Result"
-                        ),
+                        "Result Link": st.column_config.LinkColumn("Access", display_text="View"),
                         "Status": st.column_config.TextColumn("Status"),
-                        "Job ID": st.column_config.TextColumn("Phyre2 Job ID", width="medium"),
+                        "Job ID": st.column_config.TextColumn("Job ID", width="medium"),
                     },
                     hide_index=True,
                     use_container_width=True
@@ -205,12 +236,16 @@ if uploaded_file and email:
             time.sleep(bekleme_suresi)
             
         progress_bar.empty()
-        status_text.success("All sequences processed successfully.")
+        status_text.success("Analysis Batch Completed.")
+        
+        save_session(uploaded_file.name, current_results)
+        
+        st.toast("Analysis saved to history!", icon="💾")
         
         if current_results:
             df_final = pd.DataFrame(current_results)
             csv_final = df_final.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Download Report (CSV)", csv_final, 'session_report.csv', 'text/csv', type="primary")
+            st.download_button("📥 Download Batch Report (CSV)", csv_final, 'batch_report.csv', 'text/csv', type="primary")
 
 elif not email and uploaded_file:
     st.warning("Please enter your e-mail address to proceed.")
