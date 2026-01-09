@@ -1,262 +1,127 @@
 import streamlit as st
 import pandas as pd
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 import time
-import urllib.parse
-import os
-import shutil
-import zipfile
-import io  # Critical for file buffer handling
+import random
+from datetime import datetime
 
-# --- PAGE CONFIGURATION ---
-st.set_page_config(
-    page_title="InsectBase Data Acquisition Tool",
-    page_icon="🧬",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# --- AYARLAR & STİL ---
+st.set_page_config(page_title="Genomic Pipeline", page_icon="🧬", layout="wide")
 
-# --- DIRECTORY MANAGEMENT ---
-# Define a temporary repository for downloaded datasets
-REPO_DIR = os.path.join(os.getcwd(), "temp_data_repository")
-
-# Clean and recreate the repository to ensure a fresh state
-if os.path.exists(REPO_DIR):
-    shutil.rmtree(REPO_DIR)
-os.makedirs(REPO_DIR)
-
-# --- SELENIUM DRIVER INITIALIZATION ---
-def initialize_driver():
-    """
-    Initializes a headless Chrome driver configured for automated file downloads.
-    """
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
-    
-    # Configure download preferences to bypass prompts
-    prefs = {
-        "download.default_directory": REPO_DIR,
-        "download.prompt_for_download": False,
-        "download.directory_upgrade": True,
-        "safebrowsing.enabled": True
-    }
-    chrome_options.add_experimental_option("prefs", prefs)
-    
-    driver = webdriver.Chrome(options=chrome_options)
-    return driver
-
-# --- UTILITY: ARCHIVE GENERATION ---
-def create_archive(source_dir):
-    """
-    Compresses the retrieved JSON files into a single ZIP archive.
-    """
-    archive_name = "genomic_data_archive.zip"
-    with zipfile.ZipFile(archive_name, 'w', zipfile.ZIP_DEFLATED) as zipf:
-        for root, dirs, files in os.walk(source_dir):
-            for file in files:
-                zipf.write(os.path.join(root, file), file)
-    return archive_name
-
-# --- UI HEADER & DESCRIPTION ---
-st.title("🧬 Automated Insect Genome Data Acquisition Tool")
 st.markdown("""
-**Abstract:** This utility facilitates the high-throughput retrieval of genomic datasets from the *InsectBase* repository. 
-It automates the navigation, extraction, and aggregation of JSON-formatted gene metadata based on provided Accession IDs.
+<style>
+    .stDataFrame { border: 1px solid #444; }
+    .reportview-container { background: #0e1117; }
+</style>
+""", unsafe_allow_html=True)
 
-**Methodology:**
-1.  **Input:** Accepts an Excel/CSV manifest containing Gene/Sequence IDs.
-2.  **Processing:** Iteratively accesses gene profiles via a headless browser engine (Selenium).
-3.  **Extraction:** Triggers the asynchronous 'Export JSON' event for each record.
-4.  **Output:** Generates a comprehensive ZIP archive and a detailed acquisition report.
-""")
-st.divider()
+# --- SAHTE VERİ & DURUM ---
+GENE_LIST = ["Mdom002531.1", "Mdom003083.1", "Mdom004200.1", "Mdom008091.1", "Mdom009999.1"]
+LOGS = []
 
-# --- SIDEBAR: CONFIGURATION ---
-with st.sidebar:
-    st.header("1. Data Import")
-    uploaded_file = st.file_uploader("Upload Manifest (.xlsx)", type=['xlsx', 'xls'])
+# --- FONKSİYONLAR ---
+
+def add_log(message, level="INFO"):
+    """Sisteme zaman damgalı log ekler."""
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    icon = "ℹ️" if level == "INFO" else "⚠️" if level == "WARN" else "❌"
+    LOGS.insert(0, f"[{timestamp}] {icon} {message}") # En yeniyi en üste ekle
+    return LOGS
+
+def simulate_processing(gene_id, status_container):
+    """
+    Retry mekanizmalı işlem simülasyonu.
+    Burayı kendi indirme/parse kodunla değiştireceksin.
+    """
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        try:
+            # 1. Adım: Bağlantı
+            status_container.write(f"📡 {gene_id}: API Bağlantısı kuruluyor (Deneme {attempt}/{max_retries})...")
+            time.sleep(random.uniform(0.5, 1.5))
+            
+            # Hata Simülasyonu (Belli genler hata versin diye)
+            if gene_id == "Mdom008091.1" and attempt < 3:
+                raise ConnectionError("Sunucu yanıt vermedi (Timeout).")
+            
+            # 2. Adım: İndirme
+            status_container.write(f"⬇️ {gene_id}: Veri paketi indiriliyor...")
+            time.sleep(0.8)
+            
+            # 3. Adım: Doğrulama
+            status_container.write(f"🔍 {gene_id}: Checksum doğrulanıyor...")
+            time.sleep(0.5)
+            
+            return True, "SUCCESS", "İşlem Tamamlandı"
+            
+        except Exception as e:
+            add_log(f"{gene_id} - Hata: {str(e)}", "WARN")
+            if attempt < max_retries:
+                status_container.warning(f"⚠️ {gene_id}: Hata alındı. {2} saniye içinde tekrar deneniyor...")
+                time.sleep(2) # Backoff süresi
+            else:
+                return False, "FAILED", str(e)
+
+# --- ARAYÜZ (UI) ---
+
+st.title("🧬 Genomic Data Acquisition Pipeline")
+st.markdown("---")
+
+col1, col2 = st.columns([2, 1])
+
+# Sol Taraf: Canlı Tablo
+with col1:
+    st.subheader("📋 Batch Processing Queue")
+    table_placeholder = st.empty()
     
-    st.divider()
+    # Başlangıç Tablosu
+    df = pd.DataFrame({
+        "Gene ID": GENE_LIST,
+        "Status": ["PENDING"] * len(GENE_LIST),
+        "Details": ["Waiting..."] * len(GENE_LIST)
+    })
+    table_placeholder.dataframe(df, use_container_width=True)
+
+# Sağ Taraf: Canlı Terminal Log
+with col2:
+    st.subheader("📟 System Telemetry")
+    log_placeholder = st.empty()
+    log_placeholder.code("System ready. Waiting for start command...", language="bash")
+
+# --- İŞLEM BAŞLATMA ---
+if st.button("▶️ Start Sequence", type="primary"):
     
-    st.header("2. Search Parameters")
-    species_input = st.text_input(
-        "Target Species (Scientific Name)", 
-        value="musca domestica",
-        help="Ensure the spelling matches the database index (e.g., 'musca domestica')."
-    )
-
-    st.info("ℹ️ **Note:** The process runs in the cloud backend. Processing time depends on the number of records and server latency.")
-
-# --- MAIN EXECUTION LOGIC ---
-if uploaded_file:
-    # Load Data
-    try:
-        df = pd.read_excel(uploaded_file)
-    except Exception as e:
-        st.error(f"File Parsing Error: {e}")
-        st.stop()
-
-    # Column Mapping
-    st.subheader("Configuration")
-    cols = df.columns.tolist()
+    progress_bar = st.progress(0)
     
-    # Auto-detect column logic
-    default_idx = 0
-    for i, col in enumerate(cols):
-        if any(keyword in str(col).lower() for keyword in ['id', 'seq', 'gen', 'accession']):
-            default_idx = i
-            break
+    # STREAMLIT STATUS CONTAINER (Burası o 'Processing' yazısını güzelleştiren yer)
+    with st.status("🚀 Pipeline Başlatıldı...", expanded=True) as status:
+        
+        for i, gene in enumerate(GENE_LIST):
+            # Durum güncellemesi (Kullanıcıya ne olduğunu söyle)
+            status.update(label=f"Processing Record {i+1}/{len(GENE_LIST)}: **{gene}**", state="running")
             
-    col1, col2 = st.columns([1, 2])
-    with col1:
-        target_col = st.selectbox("Select Accession ID Column:", cols, index=default_idx)
-    
-    st.divider()
+            # Tabloda 'Processing' işaretle
+            df.loc[df["Gene ID"] == gene, "Status"] = "⏳ PROCESSING"
+            df.loc[df["Gene ID"] == gene, "Details"] = "Initializing..."
+            table_placeholder.dataframe(df, use_container_width=True)
+            
+            # İşlemi Yap (Retry mantığı burada çalışıyor)
+            success, result_status, msg = simulate_processing(gene, status)
+            
+            # Sonuçları Tabloya Yaz
+            if success:
+                df.loc[df["Gene ID"] == gene, "Status"] = "✅ COMPLETED"
+                df.loc[df["Gene ID"] == gene, "Details"] = "Indexed in DB"
+                add_log(f"{gene} başarıyla işlendi.", "INFO")
+            else:
+                df.loc[df["Gene ID"] == gene, "Status"] = "❌ FAILED"
+                df.loc[df["Gene ID"] == gene, "Details"] = "Max retries exceeded"
+                add_log(f"{gene} için tüm denemeler başarısız oldu.", "ERROR")
+            
+            # UI Güncelle
+            table_placeholder.dataframe(df, use_container_width=True)
+            log_placeholder.code("\n".join(LOGS[:10]), language="bash") # Son 10 logu göster
+            progress_bar.progress((i + 1) / len(GENE_LIST))
+            
+        status.update(label="🏁 Batch İşlemi Tamamlandı", state="complete", expanded=False)
 
-    # Execution Button
-    if st.button("🚀 Initialize Batch Extraction", type="primary"):
-        
-        # UI Elements for Feedback
-        progress_bar = st.progress(0)
-        status_container = st.empty()
-        log_container = st.container()
-        
-        # Data Containers
-        report_data = []
-        total_records = len(df)
-        success_count = 0
-        
-        # Initialize Driver
-        with st.spinner("Initializing browser engine..."):
-            driver = initialize_driver()
-        
-        # Processing Loop
-        status_container.info("Batch processing started...")
-        
-        for i, row in df.iterrows():
-            gene_id = str(row[target_col]).strip()
-            
-            # URL Encoding
-            encoded_species = urllib.parse.quote(species_input.strip())
-            target_url = f"https://www.insect-genome.com/gene/{encoded_species}/{gene_id}"
-            
-            # Update Status
-            status_container.markdown(f"**Processing Record {i+1}/{total_records}:** `{gene_id}`")
-            
-            # Operation Variables
-            op_status = "FAILED"
-            acquired_filename = "N/A"
-            error_detail = "-"
-            
-            try:
-                driver.get(target_url)
-                wait = WebDriverWait(driver, 10) # 10s Timeout
-                
-                # Locate and Click Export Button
-                try:
-                    # Wait for the button to be interactive
-                    export_btn = wait.until(EC.element_to_be_clickable(
-                        (By.XPATH, "//button[contains(text(), 'Export JSON')] | //a[contains(text(), 'Export JSON')]")
-                    ))
-                    
-                    # Snapshot of directory before click
-                    files_pre = set(os.listdir(REPO_DIR))
-                    
-                    export_btn.click()
-                    
-                    # Verify Download (Polling)
-                    download_success = False
-                    for attempt in range(6): # Poll for 6 seconds
-                        time.sleep(1)
-                        files_post = set(os.listdir(REPO_DIR))
-                        if len(files_post) > len(files_pre):
-                            new_files = list(files_post - files_pre)
-                            current_file = new_files[0]
-                            
-                            # Check if download is complete (not .crdownload)
-                            if not current_file.endswith('.crdownload'):
-                                acquired_filename = current_file
-                                op_status = "SUCCESS"
-                                download_success = True
-                                success_count += 1
-                                break
-                    
-                    if not download_success:
-                        error_detail = "Download Timeout (File generation latency)"
-
-                except Exception as e:
-                    error_detail = "Export Trigger Not Found / Not Interactive"
-            
-            except Exception as e:
-                error_detail = f"Navigation Error: {str(e)}"
-            
-            # Append to Report
-            report_data.append({
-                "Accession ID": gene_id,
-                "Acquisition Status": op_status,
-                "Filename": acquired_filename,
-                "Error Details": error_detail,
-                "Source URL": target_url
-            })
-            
-            # Update Progress
-            progress_bar.progress((i + 1) / total_records)
-        
-        # Cleanup
-        driver.quit()
-        status_container.success(f"✅ Processing Complete. Successfully retrieved **{success_count}** datasets.")
-        
-        # --- OUTPUT GENERATION ---
-        
-        st.subheader("Data Export")
-        out_col1, out_col2 = st.columns(2)
-        
-        # 1. Archive Download
-        if success_count > 0:
-            archive_path = create_archive(REPO_DIR)
-            with open(archive_path, "rb") as f:
-                out_col1.download_button(
-                    label="📦 Download Data Archive (.zip)",
-                    data=f,
-                    file_name=f"{species_input.replace(' ', '_')}_dataset.zip",
-                    mime="application/zip",
-                    type="primary",
-                    help="Contains all successfully retrieved JSON files."
-                )
-        else:
-            out_col1.warning("No files were retrieved to archive.")
-
-        # 2. Report Download
-        report_df = pd.DataFrame(report_data)
-        buffer = io.BytesIO()
-        
-        # Using openpyxl for reliable writing
-        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            report_df.to_excel(writer, index=False, sheet_name="Acquisition Log")
-            
-        out_col2.download_button(
-            label="📄 Download Acquisition Report (.xlsx)",
-            data=buffer.getvalue(),
-            file_name="acquisition_report.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            help="Detailed log of successes and errors."
-        )
-
-        # Preview
-        with st.expander("View Acquisition Log", expanded=True):
-            st.dataframe(
-                report_df.style.map(
-                    lambda x: 'color: green; font-weight: bold;' if x == 'SUCCESS' else ('color: red;' if x == 'FAILED' else ''),
-                    subset=['Acquisition Status']
-                )
-            )
-
-else:
-    st.info("Please upload a target manifest via the sidebar to begin.")
+    st.success("Tüm kuyruk tamamlandı.")
