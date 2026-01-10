@@ -1,152 +1,111 @@
-import React, { useState, useEffect, useRef } from 'react';
+import streamlit as st
+import time
+import pandas as pd
 
-const MonitoringSystem = () => {
-  // --- AYARLAR ---
-  const [targetList, setTargetList] = useState(Array.from({ length: 13 }, (_, i) => `Target ${i + 1}`));
-  const [waitDuration, setWaitDuration] = useState(2); // Dakika cinsinden varsayılan süre
-  
-  // --- DURUM YÖNETİMİ ---
-  const [status, setStatus] = useState('IDLE'); // 'IDLE', 'SCANNING', 'WAITING'
-  const [currentProcessIndex, setCurrentProcessIndex] = useState(-1); // Hangi target taranıyor?
-  const [timeLeft, setTimeLeft] = useState(0); // Geri sayım için saniye
-  const [totalWaitTime, setTotalWaitTime] = useState(0); // Yüzdelik bar hesaplamak için
+# --- SAYFA AYARLARI ---
+st.set_page_config(page_title="Monitoring Loop", layout="wide")
 
-  // --- 1. TARAMA DÖNGÜSÜ (Processing Loop) ---
-  const startCycle = async () => {
-    setStatus('SCANNING');
+# --- SESSION STATE (DURUM YÖNETİMİ) ---
+# Streamlit her çalıştığında hafıza sıfırlanmasın diye değişkenleri burada tutuyoruz.
+if 'is_running' not in st.session_state:
+    st.session_state.is_running = False
+if 'cycle_count' not in st.session_state:
+    st.session_state.cycle_count = 0
+
+# --- ARAYÜZ ---
+st.title("🛡️ System Monitoring Loop")
+
+# Sidebar - Ayarlar
+with st.sidebar:
+    st.header("⚙️ Loop Settings")
+    # Kullanıcı süreyi değiştirdiğinde script baştan çalışır ve yeni süreyi alır.
+    wait_minutes = st.number_input("Wait Time (Minutes)", min_value=0.1, value=1.0, step=0.5)
     
-    // Her bir hedefi tek tek dön
-    for (let i = 0; i < targetList.length; i++) {
-      setCurrentProcessIndex(i); // UI'da "Şu an bunu tarıyorum" diye göster
-      
-      // Simülasyon: Her hedef için işlem yapıyormuş gibi bekle (0.5 sn)
-      // Buraya gerçek API isteği de gelebilir.
-      await new Promise(resolve => setTimeout(resolve, 500)); 
-    }
-
-    // Tarama bitti, bekleme moduna geç
-    initiateWaiting();
-  };
-
-  // --- 2. BEKLEME MODU (Smart Timer) ---
-  const initiateWaiting = () => {
-    setStatus('WAITING');
-    setCurrentProcessIndex(-1); // Seçimi kaldır
+    # Başlat / Durdur Butonları
+    if st.button("▶ Initiate Monitoring Loop", type="primary"):
+        st.session_state.is_running = True
+        st.rerun()
     
-    // O anki ayarlı süre neyse onu al (Dinamik Süre Mantığı)
-    // Kullanıcı input'u değiştirdiyse, bir sonraki döngü o yeni süreyi alır.
-    const durationInSeconds = waitDuration * 60; 
+    if st.button("⏹ Stop System"):
+        st.session_state.is_running = False
+        st.rerun()
+
+# --- ANA MANTIK ---
+if st.session_state.is_running:
     
-    setTimeLeft(durationInSeconds);
-    setTotalWaitTime(durationInSeconds);
-  };
+    # Yer tutucular (Placeholders): 
+    # Streamlit'te akıcı animasyon için boş kutular oluşturup içini dolduruyoruz.
+    status_header = st.empty()
+    progress_bar = st.progress(0)
+    log_area = st.empty()
+    timer_area = st.empty()
 
-  // --- 3. GERİ SAYIM MANTIĞI (Timer Tick) ---
-  useEffect(() => {
-    let interval = null;
-
-    if (status === 'WAITING' && timeLeft > 0) {
-      // Sadece saniyede bir çalışır, sistemi yormaz.
-      interval = setInterval(() => {
-        setTimeLeft((prev) => prev - 1);
-      }, 1000);
-    } else if (status === 'WAITING' && timeLeft === 0) {
-      // Süre bitti! Yeni cycle başlat.
-      clearInterval(interval);
-      startCycle(); 
-    }
-
-    return () => clearInterval(interval);
-  }, [status, timeLeft]);
-
-  // --- HESAPLAMALAR ---
-  // Bekleme yüzdesi (Progress Bar için)
-  const waitProgress = totalWaitTime > 0 ? ((totalWaitTime - timeLeft) / totalWaitTime) * 100 : 0;
-
-  return (
-    <div className="p-4 border rounded shadow-lg bg-gray-50">
-      
-      {/* KONTROL PANELİ */}
-      <div className="mb-4 flex gap-4 items-center">
-        <button 
-          onClick={startCycle} 
-          disabled={status !== 'IDLE'}
-          className="bg-red-600 text-white px-4 py-2 rounded disabled:opacity-50"
-        >
-          {status === 'IDLE' ? '▶ Initiate Monitoring Loop' : 'System Active...'}
-        </button>
-
-        <div className="flex flex-col">
-          <label className="text-xs font-bold text-gray-500">Cycle Wait Time (Min)</label>
-          <input 
-            type="number" 
-            value={waitDuration}
-            onChange={(e) => setWaitDuration(Number(e.target.value))}
-            className="border p-1 rounded w-20"
-          />
-          <span className="text-xs text-blue-600">
-            * Değiştirirseniz bir sonraki döngüde aktif olur.
-          </span>
+    # Hedef Listesi (Simülasyon)
+    targets = [f"Target_Server_{i+1:02d}" for i in range(13)]
+    
+    # ---------------------------------------------------------
+    # BÖLÜM 1: TARAMA DÖNGÜSÜ (DOWNLOAD MODE GİBİ GÖSTERİM)
+    # ---------------------------------------------------------
+    st.session_state.cycle_count += 1
+    cycle_num = st.session_state.cycle_count
+    
+    status_header.markdown(f"### 🔄 Cycle {cycle_num}: Scanning Started...")
+    
+    for i, target in enumerate(targets):
+        # 1. UI Güncelle: "Şu an bunu tarıyorum" efekti
+        current_progress = (i + 1) / len(targets)
+        progress_bar.progress(current_progress)
+        
+        # Log alanını dinamik güncelle
+        # HTML kullanarak o an tarananı kalın (bold) ve renkli gösteriyoruz
+        log_html = f"""
+        <div style="border:1px solid #ddd; padding:10px; border-radius:5px;">
+            Scanning: <b style="color:blue;">{target}</b><br>
+            <span style="color:gray; font-size:0.8em;">Processed {i+1}/{len(targets)} targets</span>
         </div>
-      </div>
+        """
+        log_area.markdown(log_html, unsafe_allow_html=True)
+        
+        # 2. İşlem Simülasyonu (Gerçek işlem kodunu buraya koyacaksın)
+        time.sleep(0.3)  # Her hedef için 0.3 saniye bekle (Hızlı geçiş hissi)
 
-      {/* DURUM GÖSTERGESİ */}
-      
-      {/* SENARYO A: TARAMA YAPIYORSA (Download Mode) */}
-      {status === 'SCANNING' && (
-        <div className="mb-4">
-          <h3 className="text-blue-600 font-bold mb-2">Cycle Running: Scanning Targets...</h3>
-          <div className="h-4 w-full bg-gray-200 rounded overflow-hidden">
-            <div 
-              className="h-full bg-blue-500 transition-all duration-300"
-              style={{ width: `${((currentProcessIndex + 1) / targetList.length) * 100}%` }}
-            ></div>
-          </div>
-          <p className="text-sm text-right mt-1">{currentProcessIndex + 1} / {targetList.length}</p>
-        </div>
-      )}
+    # Tarama bitti, logu sabitle
+    log_area.success(f"✅ Cycle {cycle_num} Completed successfully. {len(targets)} targets scanned.")
+    
+    # ---------------------------------------------------------
+    # BÖLÜM 2: AKILLI BEKLEME (GERİ SAYIM ANIMASYONU)
+    # ---------------------------------------------------------
+    
+    # Saniye cinsinden toplam süre
+    total_wait_seconds = int(wait_minutes * 60)
+    
+    # Geri sayım döngüsü
+    for remaining in range(total_wait_seconds, 0, -1):
+        # "Durdur" butonuna basılırsa döngüden hemen çıkması için kontrol (Zorunlu değil ama iyi pratik)
+        if not st.session_state.is_running:
+            break
 
-      {/* SENARYO B: BEKLİYORSA (Timer Mode) */}
-      {status === 'WAITING' && (
-        <div className="mb-4">
-          <h3 className="text-orange-600 font-bold mb-2">Cycle Finished. Waiting for next run...</h3>
-          
-          {/* Yüzdeli Bekleme Animasyonu */}
-          <div className="relative h-6 w-full bg-gray-300 rounded overflow-hidden shadow-inner">
-            <div 
-              className="h-full bg-orange-400 transition-all duration-1000 ease-linear"
-              style={{ width: `${waitProgress}%` }}
-            ></div>
-            <span className="absolute inset-0 flex items-center justify-center text-xs font-bold text-white drop-shadow-md">
-              Next Scan in: {Math.floor(timeLeft / 60)}m {timeLeft % 60}s ({Math.floor(waitProgress)}%)
-            </span>
-          </div>
-        </div>
-      )}
+        # Yüzdelik hesapla
+        percent_complete = 1.0 - (remaining / total_wait_seconds)
+        
+        # Dakika:Saniye formatı
+        mins, secs = divmod(remaining, 60)
+        time_str = f"{mins:02d}:{secs:02d}"
+        
+        # Timer animasyonu (Turuncu bar ve metin)
+        status_header.markdown(f"### ⏳ Sleeping... Next scan in: `{time_str}`")
+        progress_bar.progress(percent_complete) # Dolum efekti
+        
+        # Burası önemli: 1 saniye bekle
+        time.sleep(1)
+    
+    # ---------------------------------------------------------
+    # BÖLÜM 3: LOOP (YENİDEN BAŞLATMA)
+    # ---------------------------------------------------------
+    if st.session_state.is_running:
+        st.rerun()  # Scripti en baştan tekrar çalıştırır -> Yeni Cycle başlar
 
-      {/* HEDEF LİSTESİ GÖRÜNÜMÜ */}
-      <div className="grid grid-cols-1 gap-2 border-t pt-4">
-        {targetList.map((target, index) => (
-          <div 
-            key={index} 
-            className={`p-2 rounded border flex justify-between items-center transition-colors ${
-              index === currentProcessIndex ? 'bg-blue-100 border-blue-500 scale-105 shadow-md' : 'bg-white'
-            }`}
-          >
-            <span>{target}</span>
-            {index < currentProcessIndex ? (
-              <span className="text-green-500 font-bold">✓ Done</span>
-            ) : index === currentProcessIndex ? (
-              <span className="text-blue-600 font-bold animate-pulse">Scanning...</span>
-            ) : (
-              <span className="text-gray-400">Pending</span>
-            )}
-          </div>
-        ))}
-      </div>
-
-    </div>
-  );
-};
-
-export default MonitoringSystem;
+else:
+    # Sistem kapalıyken görünecek ekran
+    st.info("System is IDLE. Click 'Initiate' to start the monitoring loop.")
+    st.metric(label="Total Cycles Completed", value=st.session_state.cycle_count)
