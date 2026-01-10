@@ -10,7 +10,7 @@ import json
 import uuid
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="Phyre2 Pro Suite v2", page_icon="🧬", layout="wide")
+st.set_page_config(page_title="Phyre2 Pro Suite v3", page_icon="🧬", layout="wide")
 
 # --- CSS ---
 st.markdown("""
@@ -38,7 +38,6 @@ if 'current_session_id' not in st.session_state:
     st.session_state.current_session_id = None
 if 'uploader_key' not in st.session_state:
     st.session_state.uploader_key = 0
-# YENİ: Dosya ismini hafızada tutmak için değişken
 if 'active_filename' not in st.session_state:
     st.session_state.active_filename = "results"
 
@@ -96,23 +95,26 @@ def clear_all_history():
     if os.path.exists(HISTORY_FILE):
         os.remove(HISTORY_FILE)
 
-# --- SIFIRLAMA ---
-def reset_app():
+# --- SIFIRLAMA FONKSİYONU (Logic Only) ---
+def perform_reset():
     st.session_state.uploader_key += 1
     st.session_state.results_data = []
     st.session_state.analysis_complete = False
     st.session_state.current_session_id = None
-    st.session_state.active_filename = "results" # Dosya ismini de sıfırla
-    st.rerun()
+    st.session_state.active_filename = "results"
 
 # --- BAŞLIK ---
-st.title("🧬 Phyre2 Protein Modelling Automation")
+st.title("🧬 Phyre2 Protein Modelling Automation (Fix v3)")
 st.markdown("Automated tool with **Persistent State**. Data is safe during download.")
 st.divider()
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.button("🔄 New Analysis / Reset", on_click=reset_app, type="primary")
+    # DÜZELTME 2: Reset butonu artık callback kullanmıyor, doğrudan akışta çalışıyor
+    if st.button("🔄 New Analysis / Reset", type="primary"):
+        perform_reset()
+        st.rerun()
+
     st.markdown("---")
     
     st.subheader("📂 Analysis Sessions")
@@ -176,13 +178,12 @@ if uploaded_file:
 
         # --- ANALİZ MANTIĞI ---
         if start_btn:
-            # DÜZELTME: Dosya ismini hemen hafızaya alıyoruz
+            # Dosya ismini hemen hafızaya alıyoruz
             st.session_state.active_filename = uploaded_file.name
 
-            # Önceki verileri temizle
+            # Temizlik
             st.session_state.results_data = []
             st.session_state.analysis_complete = False
-            
             st.session_state.current_session_id = str(uuid.uuid4())
             
             progress_bar = st.progress(0)
@@ -224,7 +225,9 @@ if uploaded_file:
                             job_id = job_match.group(1)
                             current_job_id = job_id
                             monitor_link = f"http://www.sbg.bio.ic.ac.uk/phyre2/webscripts/jobmonitor-harry.cgi?jobid={job_id}"
-                            status_code = "Completed"
+                            
+                            # DÜZELTME 1: "Completed" yerine "Submitted"
+                            status_code = "Submitted" 
                             result_link = monitor_link
                         else:
                             status_code = "Submitted (No Link)"
@@ -240,10 +243,9 @@ if uploaded_file:
                     "Result Link": result_link
                 })
                 
-                # --- AUTOSAVE ---
                 update_session_in_history(
                     st.session_state.current_session_id, 
-                    st.session_state.active_filename, # Kaydedilen ismi kullan
+                    st.session_state.active_filename,
                     st.session_state.results_data
                 )
                 
@@ -284,8 +286,7 @@ if st.session_state.results_data:
     
     col_d1, col_d2 = st.columns([1, 4])
     with col_d1:
-        # DÜZELTME: Artık uploaded_file objesine bağımlı değiliz.
-        # Session State'teki kayıtlı ismi kullanıyoruz.
+        # Hafızadaki ismi kullan
         try:
             stored_name = st.session_state.get('active_filename', 'results')
             file_name_clean = stored_name.split('.')[0]
