@@ -143,17 +143,22 @@ def analyze_page_status(driver, url):
     except Exception as e:
         return {"status": "ERROR", "details": str(e), "est_time": "-", "is_complete": False}
 
-# --- JS SCROLL HELPER (DÜZELTİLDİ) ---
+# --- JS SCROLL HELPER (GÜÇLENDİRİLMİŞ RETRY LOGIC) ---
 def scroll_to_table():
-    # window.parent kullanarak iframe disina cikar ve ana sayfadaki anchor'i bulur
     js = """
     <script>
-        setTimeout(function() {
+        function attemptScroll(count) {
             var element = window.parent.document.getElementById("monitor_anchor");
             if (element) {
+                // Element bulundu, hafif yukarı ofset ile kaydır
                 element.scrollIntoView({behavior: "smooth", block: "start"});
+            } else if (count > 0) {
+                // Bulamazsa 100ms bekle tekrar dene (toplam 15 deneme)
+                setTimeout(function() { attemptScroll(count - 1); }, 100);
             }
-        }, 300);
+        }
+        // Sayfa yüklendikten sonra aramaya başla
+        attemptScroll(15);
     </script>
     """
     st.components.v1.html(js, height=0)
@@ -185,7 +190,6 @@ st.title("🧬 Phyre2 Smart Manager")
 # AKILLI TABLO ÇİZİCİ
 # ==========================================
 def render_results_table(data_list, show_buttons=True):
-    # Sütun düzeni: ID, Status, Est. Time, Stage, Link, Buttons
     h1, h2, h_time, h3, h4, h5 = st.columns([1.8, 1.2, 1.2, 2, 0.8, 2.5])
     h1.markdown("**Protein ID**")
     h2.markdown("**Status**")
@@ -206,9 +210,7 @@ def render_results_table(data_list, show_buttons=True):
         color = "orange" if status == "RUNNING" else "green" if status == "COMPLETE" else "red"
         c2.markdown(f":{color}[{status}]")
         
-        # Est. Time gösterimi
-        est_val = item.get("Est Time", "-")
-        c_time.write(est_val) 
+        c_time.write(item.get("Est Time", "-")) 
 
         c3.write(item["Current Stage"])
         c4.markdown(f"[🔗 Open]({item['Result Link']})")
@@ -290,10 +292,7 @@ if operation_mode == "🔍 Monitor Mode":
 
         st.divider()
 
-        # --- SCROLL ANCHOR ---
-        # Sayfa yenilendiğinde JS burayı hedef alacak
-        st.markdown('<div id="monitor_anchor"></div>', unsafe_allow_html=True)
-
+        # Monitor Logic
         if st.session_state.monitor_active:
             now = datetime.now()
             should_scan = False
@@ -310,12 +309,16 @@ if operation_mode == "🔍 Monitor Mode":
                     # BEKLEME MODU
                     seconds_left = (target_wait - time_diff).total_seconds()
                     
+                    # --- ÇAPA NOKTASI ---
+                    # Tam olarak sayacin ustune, hafif yukari kaydirarak konumlandiriyoruz.
+                    st.markdown('<div id="monitor_anchor" style="position: relative; top: -50px; visibility: hidden;"></div>', unsafe_allow_html=True)
+                    
                     t1, t2 = st.columns([3,1])
                     t1.caption(f"⏳ Bir sonraki tarama: {int(seconds_left // 60)}dk {int(seconds_left % 60)}sn")
                     
                     if st.session_state.latest_results_list:
                         render_results_table(st.session_state.latest_results_list, show_buttons=True)
-                        # Tabloyu çizdikten sonra scroll çağır
+                        # Tablo cizildikten sonra scroll fonksiyonunu cagiriyoruz
                         scroll_to_table()
                     
                     time.sleep(1)
@@ -324,6 +327,9 @@ if operation_mode == "🔍 Monitor Mode":
             if should_scan:
                 st.session_state.cycle_count += 1
                 temp_results_list = [] 
+                
+                # Tarama baslarken de anchor koyalim ki yukari kaysin
+                st.markdown('<div id="monitor_anchor" style="position: relative; top: -50px; visibility: hidden;"></div>', unsafe_allow_html=True)
                 
                 progress_bar = st.progress(0)
                 status_text = st.empty()
@@ -364,7 +370,7 @@ if operation_mode == "🔍 Monitor Mode":
                         progress_bar.progress((index + 1) / total_items)
                         with table_container.container():
                             render_results_table(temp_results_list, show_buttons=False)
-                            # Tarama yaparken de her satırda scroll'u güncel tut
+                            # Her adimda scroll'u tazeleyelim
                             scroll_to_table()
                     
                     status_text.success(f"✅ Döngü {st.session_state.cycle_count} Tamamlandı!")
