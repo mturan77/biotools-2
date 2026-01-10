@@ -30,7 +30,6 @@ HISTORY_FILE = "phyre_sessions.json"
 MAX_HISTORY = 10
 
 # --- SESSION STATE BAŞLATMA ---
-# Verilerin silinmemesi için burası çok önemli
 if 'results_data' not in st.session_state:
     st.session_state.results_data = []
 if 'analysis_complete' not in st.session_state:
@@ -39,6 +38,9 @@ if 'current_session_id' not in st.session_state:
     st.session_state.current_session_id = None
 if 'uploader_key' not in st.session_state:
     st.session_state.uploader_key = 0
+# YENİ: Dosya ismini hafızada tutmak için değişken
+if 'active_filename' not in st.session_state:
+    st.session_state.active_filename = "results"
 
 # --- GEÇMİŞ YÖNETİMİ ---
 def load_history():
@@ -62,7 +64,6 @@ def update_session_in_history(session_id, filename, results_list):
         "data": results_list
     }
     
-    # ID varsa güncelle, yoksa ekle
     found_index = -1
     for i, item in enumerate(history):
         if item["id"] == session_id:
@@ -80,8 +81,8 @@ def update_session_in_history(session_id, filename, results_list):
     try:
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(history, f, ensure_ascii=False, indent=4)
-            f.flush() # Diske yazmayı zorla
-            os.fsync(f.fileno()) # İşletim sistemi seviyesinde yazmayı zorla
+            f.flush()
+            os.fsync(f.fileno())
     except Exception as e:
         st.error(f"History save error: {e}")
 
@@ -101,6 +102,7 @@ def reset_app():
     st.session_state.results_data = []
     st.session_state.analysis_complete = False
     st.session_state.current_session_id = None
+    st.session_state.active_filename = "results" # Dosya ismini de sıfırla
     st.rerun()
 
 # --- BAŞLIK ---
@@ -166,7 +168,6 @@ if uploaded_file:
         with col2:
             st.info(f"**Status:** Ready\n\n**Total Sequences:** {len(raw_entries)}")
             
-            # Butona basılınca bir flag (bayrak) kaldırıyoruz, işlemi aşağıda yapıyoruz
             if not st.session_state.analysis_complete:
                 start_btn = st.button("🚀 Start Analysis", type="primary")
             else:
@@ -175,11 +176,13 @@ if uploaded_file:
 
         # --- ANALİZ MANTIĞI ---
         if start_btn:
+            # DÜZELTME: Dosya ismini hemen hafızaya alıyoruz
+            st.session_state.active_filename = uploaded_file.name
+
             # Önceki verileri temizle
             st.session_state.results_data = []
             st.session_state.analysis_complete = False
             
-            # Session ID'yi burada sabitliyoruz
             st.session_state.current_session_id = str(uuid.uuid4())
             
             progress_bar = st.progress(0)
@@ -201,7 +204,7 @@ if uploaded_file:
                     'Referer': 'http://www.sbg.bio.ic.ac.uk/phyre2/html/page.cgi?id=index'
                 }
                 payload = {
-                    'usr-email': email, 'seq-desc': header, 'sequence': sequence,     
+                    'usr-email': email, 'seq-desc': header, 'sequence': sequence,      
                     'modelmode': mode, 'private': 'no', 
                     'type': 'academic' if 'Academic' in user_type else 'commercial' 
                 }
@@ -230,7 +233,6 @@ if uploaded_file:
                 except Exception as e:
                     status_code = "Connection Error"
                 
-                # --- SONUCU SESSION STATE'E EKLE ---
                 st.session_state.results_data.append({
                     "Protein ID": header,
                     "Job ID": current_job_id,
@@ -241,11 +243,10 @@ if uploaded_file:
                 # --- AUTOSAVE ---
                 update_session_in_history(
                     st.session_state.current_session_id, 
-                    uploaded_file.name, 
+                    st.session_state.active_filename, # Kaydedilen ismi kullan
                     st.session_state.results_data
                 )
                 
-                # --- TABLOYU GÜNCELLE ---
                 df_live = pd.DataFrame(st.session_state.results_data)
                 with result_placeholder.container():
                     st.dataframe(
@@ -259,20 +260,17 @@ if uploaded_file:
 
                 time.sleep(bekleme_suresi)
             
-            # Döngü bitti
             progress_bar.empty()
             status_text.success("Analysis Batch Completed.")
             st.session_state.analysis_complete = True
-            st.rerun() # Sayfayı yenile ki butonlar aktifleşsin
+            st.rerun()
 
 # --- SONUÇLARI GÖSTERME VE İNDİRME ALANI ---
-# Burası "if start_btn" bloğunun DIŞINDA olduğu için sayfa yenilense de çalışır
 if st.session_state.results_data:
     st.subheader("📊 Analysis Results")
     
     df_final = pd.DataFrame(st.session_state.results_data)
     
-    # Tabloyu göster
     st.dataframe(
         df_final,
         column_config={
@@ -284,19 +282,25 @@ if st.session_state.results_data:
         use_container_width=True
     )
     
-    # --- GÜVENLİ İNDİRME ---
     col_d1, col_d2 = st.columns([1, 4])
     with col_d1:
-        csv_final = df_final.to_csv(index=False).encode('utf-8')
-        
-        # Dosya adını dinamik yapalım
-        file_name_clean = uploaded_file.name.split('.')[0] if uploaded_file else "results"
+        # DÜZELTME: Artık uploaded_file objesine bağımlı değiliz.
+        # Session State'teki kayıtlı ismi kullanıyoruz.
+        try:
+            stored_name = st.session_state.get('active_filename', 'results')
+            file_name_clean = stored_name.split('.')[0]
+        except:
+            file_name_clean = "results"
+            
         timestamp = datetime.now().strftime("%H%M")
+        final_filename = f'{file_name_clean}_{timestamp}_results.csv'
+        
+        csv_final = df_final.to_csv(index=False).encode('utf-8')
         
         st.download_button(
             label="📥 Download CSV",
             data=csv_final,
-            file_name=f'{file_name_clean}_{timestamp}_results.csv',
+            file_name=final_filename,
             mime='text/csv',
             type="primary"
         )
