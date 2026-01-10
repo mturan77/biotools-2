@@ -5,7 +5,7 @@ import time
 import zipfile
 import io
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -13,7 +13,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.by import By
 
 # --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="Phyre2 Automated Retrieval System", page_icon="🧬", layout="wide")
+st.set_page_config(page_title="Phyre2 Smart Monitor", page_icon="🧬", layout="wide")
 
 # --- UTILS & DRIVER SETUP ---
 def get_driver():
@@ -40,15 +40,11 @@ def download_content(url):
         return None
     return None
 
-# --- CORE FUNCTION: ANALYZE STATUS ONLY ---
+# --- CORE FUNCTION: ANALYZE STATUS ---
 def analyze_page_status(driver, url):
-    """
-    Analyzes the page content without downloading files.
-    Returns a dictionary with status details.
-    """
     try:
         driver.get(url)
-        time.sleep(2) # Short wait for DOM
+        time.sleep(1.5) # Short wait
         page_source = driver.page_source
         page_text = driver.find_element(By.TAG_NAME, "body").text
         
@@ -63,24 +59,20 @@ def analyze_page_status(driver, url):
             "is_complete": False
         }
 
-        # Logic
         if "FAILED" in page_text:
             status_data["status"] = "FAILED"
             status_data["details"] = "Processing Error Detected"
         
         elif "Job Status" in page_text or "Queue" in page_text or "Estimated" in page_text:
-            # Check if download button is missing (Double check for running status)
             if "Download zip of all results" not in page_text:
                 status_data["status"] = "RUNNING"
                 status_data["est_time"] = time_match.group(1).strip() if time_match else "Calculating..."
                 status_data["details"] = step_match.group(1).strip() if step_match else "Initializing..."
             else:
-                # Text says status but download button exists -> Actually Complete
                 status_data["status"] = "COMPLETE"
                 status_data["details"] = "Analysis Finalized"
                 status_data["is_complete"] = True
         else:
-            # Assume complete if no status text found
             status_data["status"] = "COMPLETE"
             status_data["details"] = "Ready for Retrieval"
             status_data["is_complete"] = True
@@ -90,7 +82,13 @@ def analyze_page_status(driver, url):
     except Exception as e:
         return {"status": "ERROR", "details": str(e), "est_time": "-", "is_complete": False}
 
-# --- SIDEBAR: MODE SELECTION ---
+# --- SESSION STATE INITIALIZATION ---
+if 'monitor_active' not in st.session_state: st.session_state.monitor_active = False
+if 'last_scan_time' not in st.session_state: st.session_state.last_scan_time = None
+if 'latest_results_df' not in st.session_state: st.session_state.latest_results_df = None
+if 'cycle_count' not in st.session_state: st.session_state.cycle_count = 0
+
+# --- SIDEBAR ---
 st.sidebar.title("🎮 Control Panel")
 operation_mode = st.sidebar.radio(
     "Select Operation Protocol:",
@@ -104,86 +102,142 @@ st.title("🧬 Phyre2 Automated Retrieval System")
 # ==========================================
 if operation_mode == "🔍 Monitor Mode (Watch Only)":
     st.markdown("### 📡 Real-time Status Monitoring Dashboard")
-    st.info("This mode monitors the progress of your jobs without downloading files. It auto-refreshes the status table.")
     
+    # 1. Dosya Yükleme ve Ayarlar
     uploaded_file = st.file_uploader("Upload CSV for Monitoring", type=["csv"], key="monitor_csv")
     
-    # REFRESH RATE UPDATED: MIN 1 MINUTE
-    refresh_rate = st.sidebar.slider("Auto-Refresh Interval (Minutes)", min_value=1, max_value=60, value=15)
+    # Refresh Rate Slider (Dinamik Süre Ayarı için)
+    # Bu slider değiştiğinde kod rerun olur, aşağıda kalan süreyi yeni değere göre hesaplarız.
+    refresh_minutes = st.sidebar.slider("Cycle Wait Time (Minutes)", min_value=1, max_value=120, value=15)
     
     if uploaded_file:
         df = pd.read_csv(uploaded_file)
         if "Result Link" in df.columns:
             st.write(f"**Targets Identified:** {len(df)}")
             
-            # Start Button
-            if st.button("▶️ Initiate Monitoring Loop", type="primary"):
+            # Start / Stop Logic
+            col1, col2 = st.columns([1, 4])
+            with col1:
+                if not st.session_state.monitor_active:
+                    if st.button("▶️ Start Loop", type="primary"):
+                        st.session_state.monitor_active = True
+                        st.session_state.last_scan_time = None # Force immediate scan
+                        st.rerun()
+                else:
+                    if st.button("⏹️ Stop Loop", type="secondary"):
+                        st.session_state.monitor_active = False
+                        st.rerun()
+            
+            with col2:
+                if st.session_state.monitor_active:
+                    st.success("🟢 System Active: Monitoring cycle engaged.")
+                else:
+                    st.info("⚪ System Idle.")
+
+            st.divider()
+
+            # --- MONITORING LOOP LOGIC ---
+            if st.session_state.monitor_active:
                 
-                status_placeholder = st.empty()
-                log_placeholder = st.empty()
-                driver = get_driver()
+                # Zaman Hesaplaması
+                now = datetime.now()
+                should_scan = False
                 
-                # Create a container for the dataframe to update in-place
-                df_results = pd.DataFrame(columns=["Protein ID", "Status", "Current Stage", "Est. Time", "Last Checked"])
-                table_container = st.empty()
-                
-                try:
-                    # Infinite Loop for Monitoring
-                    iteration = 0
-                    while True:
-                        iteration += 1
-                        current_time = datetime.now().strftime("%H:%M:%S")
-                        log_placeholder.info(f"🔄 Cycle {iteration}: Scanning started at {current_time}...")
+                if st.session_state.last_scan_time is None:
+                    should_scan = True
+                else:
+                    time_diff = now - st.session_state.last_scan_time
+                    target_wait = timedelta(minutes=refresh_minutes)
+                    
+                    if time_diff >= target_wait:
+                        should_scan = True
+                    else:
+                        # --- WAITING PHASE (Geri Sayım) ---
+                        seconds_left = (target_wait - time_diff).total_seconds()
+                        total_seconds = target_wait.total_seconds()
+                        progress = max(0.0, min(1.0, 1 - (seconds_left / total_seconds)))
                         
-                        temp_results = []
+                        st.info(f"⏳ **Next Cycle in:** {int(seconds_left // 60)}m {int(seconds_left % 60)}s")
+                        st.progress(progress, text=f"Waiting... (Cycle {st.session_state.cycle_count} complete)")
                         
-                        for i, row in df.iterrows():
-                            protein_id = str(row.get("Protein ID", f"Protein_{i}")).strip()
+                        # Son sonuçları bekleme ekranında da göster
+                        if st.session_state.latest_results_df is not None:
+                            st.subheader("📊 Last Cycle Results")
+                            st.dataframe(
+                                st.session_state.latest_results_df,
+                                column_config={
+                                    "Result Link": st.column_config.LinkColumn(
+                                        "Phyre2 Link",
+                                        display_text="Open Result 🔗"
+                                    ),
+                                    "Status": st.column_config.TextColumn(
+                                        "Status",
+                                        help="Current status of the job"
+                                    )
+                                },
+                                use_container_width=True,
+                                hide_index=True
+                            )
+                        
+                        # 1 Saniye bekle ve sayfayı yenile (Countdown animasyonu için)
+                        time.sleep(1)
+                        st.rerun()
+
+                # --- SCANNING PHASE (Tarama) ---
+                if should_scan:
+                    st.session_state.cycle_count += 1
+                    current_cycle = st.session_state.cycle_count
+                    
+                    # Kullanıcıya taramanın başladığını gösteren alan
+                    scan_container = st.status(f"🔄 Cycle {current_cycle}: Scanning {len(df)} proteins...", expanded=True)
+                    progress_bar = scan_container.progress(0)
+                    
+                    results_list = []
+                    driver = get_driver()
+                    
+                    try:
+                        total_items = len(df)
+                        for index, row in df.iterrows():
+                            protein_id = str(row.get("Protein ID", f"Protein_{index}")).strip()
                             url = row["Result Link"]
                             
-                            # Analyze
+                            # Ekrana anlık ne yaptığını yaz
+                            scan_container.write(f"🔎 Checking ({index+1}/{total_items}): **{protein_id}**")
+                            progress_bar.progress((index + 1) / total_items)
+                            
+                            # Analiz
                             res = analyze_page_status(driver, url)
                             
-                            # Add to list
-                            temp_results.append({
+                            # Listeye ekle (Link sütunu değişmedi, orijinal URL'yi tutuyoruz)
+                            results_list.append({
                                 "Protein ID": protein_id,
                                 "Status": res["status"],
                                 "Current Stage": res["details"],
                                 "Est. Time": res["est_time"],
-                                "Last Checked": current_time
+                                "Last Checked": datetime.now().strftime("%H:%M:%S"),
+                                "Result Link": url  # Bu sütun dataframe config ile linke dönüşecek
                             })
+                            
+                        # Tarama bitti
+                        st.session_state.last_scan_time = datetime.now()
+                        st.session_state.latest_results_df = pd.DataFrame(results_list)
                         
-                        # Update Table
-                        df_results = pd.DataFrame(temp_results)
+                        scan_container.update(label=f"✅ Cycle {current_cycle} Complete!", state="complete", expanded=False)
                         
-                        # Styling the dataframe
-                        def color_status(val):
-                            color = 'black'
-                            if val == 'RUNNING': color = 'orange'
-                            elif val == 'COMPLETE': color = 'green'
-                            elif val == 'FAILED': color = 'red'
-                            return f'color: {color}; font-weight: bold'
-
-                        table_container.dataframe(df_results.style.applymap(color_status, subset=['Status']), use_container_width=True)
-                        
-                        # Wait for next cycle
-                        log_placeholder.success(f"✅ Cycle {iteration} complete. Next scan in {refresh_rate} minutes.")
-                        time.sleep(refresh_rate * 60)
-                        
-                except Exception as e:
-                    st.error(f"Monitoring Interrupted: {e}")
-                    if driver: driver.quit()
-                finally:
-                    if driver: driver.quit()
+                    except Exception as e:
+                        st.error(f"Error during scan: {e}")
+                    finally:
+                        driver.quit()
+                        st.rerun() # Tarama bitince bekleme moduna geçmek için hemen rerun
 
 # ==========================================
 # MODE 2: DOWNLOADER MODE (HARVEST)
 # ==========================================
 elif operation_mode == "⬇️ Downloader Mode (Harvest)":
+    # (Önceki kodun aynısı - değişiklik yok)
     st.markdown("### 📦 Data Acquisition & Packaging Module")
     st.info("This mode executes the final retrieval protocol: downloading PDB/Archive files and generating a Master ZIP.")
     
-    # Session State for Download
     if 'dl_processed_data' not in st.session_state: st.session_state.dl_processed_data = None
     if 'dl_logs' not in st.session_state: st.session_state.dl_logs = []
     if 'dl_finished' not in st.session_state: st.session_state.dl_finished = False
@@ -225,10 +279,7 @@ elif operation_mode == "⬇️ Downloader Mode (Harvest)":
                             progress_bar.progress((i+1)/total)
                             
                             try:
-                                # Re-using the analyze function for status check
                                 status_res = analyze_page_status(driver, url)
-                                
-                                # Screenshot (Always take evidence)
                                 png_data = driver.get_screenshot_as_png()
                                 master_zip.writestr(f"{folder}status_view.png", png_data)
                                 
@@ -237,37 +288,24 @@ elif operation_mode == "⬇️ Downloader Mode (Harvest)":
                                 elif status_res["status"] == "FAILED":
                                     logs.append(f"❌ {safe_id}: Analysis FAILED.")
                                 else:
-                                    # COMPLETE - DOWNLOAD
                                     status_msg = f"✅ {safe_id}: Complete. "
                                     elements = driver.find_elements(By.TAG_NAME, "a")
-                                    
-                                    # Pinpoint Logic (Same as before)
                                     pdb_url, zip_url = None, None
                                     
-                                    # PDB Search
                                     for elem in elements:
                                         href = elem.get_attribute("href")
-                                        if href and "final.casp.pdb" in href:
-                                            pdb_url = href
-                                            break
+                                        if href and "final.casp.pdb" in href: pdb_url = href; break
                                     if not pdb_url:
                                         for elem in elements:
                                             href = elem.get_attribute("href")
-                                            if href and "final_model.pdb" in href:
-                                                pdb_url = href
-                                                break
+                                            if href and "final_model.pdb" in href: pdb_url = href; break
                                     
-                                    # Archive Search
                                     for elem in elements:
                                         href = elem.get_attribute("href")
                                         if href:
-                                            if href.endswith(".tar.gz") and "phyre" in href:
-                                                zip_url = href
-                                                break
-                                            elif href.endswith(".zip") and "results" in href and not zip_url:
-                                                zip_url = href
+                                            if href.endswith(".tar.gz") and "phyre" in href: zip_url = href; break
+                                            elif href.endswith(".zip") and "results" in href and not zip_url: zip_url = href
                                     
-                                    # Actions
                                     files_found = False
                                     if pdb_url:
                                         content = download_content(pdb_url)
@@ -284,18 +322,13 @@ elif operation_mode == "⬇️ Downloader Mode (Harvest)":
                                             status_msg += f"[Archive Saved] "
                                             files_found = True
                                             
-                                    if files_found:
-                                        logs.append(status_msg)
-                                    else:
-                                        logs.append(f"⚠️ {safe_id}: Finished but files not found.")
+                                    if files_found: logs.append(status_msg)
+                                    else: logs.append(f"⚠️ {safe_id}: Finished but files not found.")
 
                             except Exception as e:
                                 logs.append(f"⚠️ {safe_id} Error: {str(e)}")
-                                # Driver recovery logic
                                 if "refused" in str(e) or "session" in str(e):
-                                    try: driver.quit()
-                                    except: pass
-                                    driver = get_driver()
+                                    try: driver.quit(); except: pass; driver = get_driver()
                             
                             log_cont.code("\n".join(reversed(logs)), language="text")
                 
@@ -310,7 +343,6 @@ elif operation_mode == "⬇️ Downloader Mode (Harvest)":
                     st.error(f"Critical Error: {e}")
                     if driver: driver.quit()
 
-    # Results Display
     if st.session_state.dl_finished and st.session_state.dl_processed_data:
         st.success("Retrieval Protocol Complete.")
         st.code("\n".join(reversed(st.session_state.dl_logs)), language="text")
