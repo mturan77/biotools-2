@@ -4,6 +4,7 @@ import requests
 import time
 import zipfile
 import io
+import re
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -11,12 +12,17 @@ from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.by import By
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="Phyre2 Scraper & Downloader", page_icon="🕷️", layout="wide")
+st.set_page_config(page_title="Phyre2 Scraper Pro", page_icon="🧬", layout="wide")
 
-st.title("🕷️ Phyre2 Sonuç Toplayıcı (Scraper)")
-st.info("Bu modül, Phyre2 sonuç sayfalarını kontrol eder. İşlem bitmişse dosyaları indirir, bitmemişse durumunu raporlar.")
+# --- OTURUM (SESSION) BAŞLATMA ---
+if 'processed_data' not in st.session_state:
+    st.session_state.processed_data = None
+if 'logs' not in st.session_state:
+    st.session_state.logs = []
+if 'is_finished' not in st.session_state:
+    st.session_state.is_finished = False
 
-# --- SELENIUM DRIVER KURULUMU ---
+# --- SELENIUM KURULUMU ---
 def get_driver():
     chrome_options = Options()
     chrome_options.add_argument("--headless")
@@ -24,7 +30,6 @@ def get_driver():
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1200")
-    
     try:
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=chrome_options)
@@ -32,7 +37,7 @@ def get_driver():
         driver = webdriver.Chrome(options=chrome_options)
     return driver
 
-# --- DOSYA İNDİRME FONKSİYONU ---
+# --- İNDİRME FONKSİYONU ---
 def download_content(url):
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
@@ -43,10 +48,24 @@ def download_content(url):
         return None
     return None
 
-# --- DOSYA YÜKLEME ---
-uploaded_file = st.file_uploader("CSV dosyasını yükleyin", type=["csv"])
+# --- YENİ ANALİZ BUTONU ---
+def reset_app():
+    st.session_state.processed_data = None
+    st.session_state.logs = []
+    st.session_state.is_finished = False
+    st.rerun()
 
-if uploaded_file:
+# --- ARAYÜZ ---
+st.title("🧬 Phyre2 Gelişmiş Sonuç Toplayıcı")
+
+# İşlem bittiyse "Yeni Analiz" butonu göster
+if st.session_state.is_finished:
+    st.warning("⚠️ Mevcut sonuçlar ekranda. Yeni bir dosya yüklemek için aşağıdaki butona basın.")
+    st.button("🔄 Yeni Analiz Başlat (Temizle)", on_click=reset_app, type="secondary")
+
+uploaded_file = st.file_uploader("CSV dosyasını yükleyin", type=["csv"], disabled=st.session_state.is_finished)
+
+if uploaded_file and not st.session_state.is_finished:
     df = pd.read_csv(uploaded_file)
     
     if "Result Link" not in df.columns:
@@ -55,21 +74,14 @@ if uploaded_file:
         df = df.dropna(subset=["Result Link"])
         df = df[df["Result Link"].str.contains("http")]
         
-        st.write(f"**Kontrol Edilecek Link:** {len(df)}")
+        st.write(f"**İşlenecek Bağlantı Sayısı:** {len(df)}")
         
-        if st.button("🚀 Başlat", type="primary"):
+        if st.button("🚀 Scraper'ı Başlat", type="primary"):
             
             master_zip_buffer = io.BytesIO()
-            
-            # İlerleme Çubuğu
             progress_bar = st.progress(0)
-            
-            # Anlık Durum Metni (Üstte görünür)
-            status_text = st.empty()
-            
-            # Log Alanı (Sürekli güncellenen tek bir kutu)
-            st.write("### 📝 İşlem Logları")
-            log_placeholder = st.empty() 
+            status_container = st.empty()
+            log_container = st.empty()
             
             logs = []
             driver = None
@@ -78,100 +90,126 @@ if uploaded_file:
                 with zipfile.ZipFile(master_zip_buffer, "w", zipfile.ZIP_DEFLATED) as master_zip:
                     
                     total = len(df)
+                    driver = get_driver()
                     
                     for i, row in df.iterrows():
-                        protein_id = str(row.get("Protein ID", f"Protein_{i}")).replace(" ", "_")
-                        url = row["Result Link"]
-                        folder = f"{protein_id}/"
+                        # Protein ID Temizleme (Dosya Adı İçin)
+                        protein_id = str(row.get("Protein ID", f"Protein_{i}")).strip()
+                        safe_id = protein_id.replace(" ", "_").replace("/", "-") 
                         
-                        # Kullanıcıya şu an ne yaptığımızı göster
-                        status_text.info(f"İşleniyor ({i+1}/{total}): {protein_id}")
+                        url = row["Result Link"]
+                        folder = f"{safe_id}/"
+                        
+                        status_container.info(f"⏳ İşleniyor ({i+1}/{total}): {safe_id}")
                         progress_bar.progress((i+1)/total)
                         
                         try:
-                            if driver is None:
-                                driver = get_driver()
-
-                            # 1. Sayfaya Git
                             driver.get(url)
-                            time.sleep(2)
+                            time.sleep(3) 
                             
-                            # Sayfa içeriğini metin olarak al (Kontrol için)
+                            # Sayfa verilerini al
+                            page_source = driver.page_source
                             page_text = driver.find_element(By.TAG_NAME, "body").text
                             
-                            # 2. Screenshot Al (Her durumda alıyoruz, kanıt olsun)
+                            # 1. Screenshot Al
                             png_data = driver.get_screenshot_as_png()
                             master_zip.writestr(f"{folder}status_view.png", png_data)
                             
-                            # 3. DURUM KONTROLÜ (Kritik Bölüm)
-                            # Phyre2 bitmemiş işlerde "Job Status", "Queue" veya "Estimated" kelimelerini gösterir.
-                            is_finished = True
-                            if "Job Status" in page_text or "Estimated total processing time" in page_text:
-                                is_finished = False
-                                logs.append(f"⏳ {protein_id}: HENÜZ BİTMEMİŞ. (Screenshot alındı, dosya yok)")
+                            # 2. DURUM ANALİZİ
+                            is_running = False
+                            
+                            # Tahmini süre ve Adım okuma
+                            time_match = re.search(r"Estimated total processing time.*?:(.*?)(<|\n)", page_source, re.IGNORECASE)
+                            step_match = re.search(r"(\d+\.\s+[A-Za-z\s]+)", page_text)
+                            
+                            if "Job Status" in page_text or "Queue" in page_text:
+                                is_running = True
+                                est_time = time_match.group(1).strip() if time_match else "Bilinmiyor"
+                                step_info = step_match.group(1).strip() if step_match else "Hazırlanıyor"
+                                
+                                logs.append(f"⏳ {protein_id}: {step_info} | Tahmini Süre: {est_time}")
                             
                             elif "FAILED" in page_text:
-                                is_finished = False
-                                logs.append(f"❌ {protein_id}: Phyre2 işlemi HATA (Failed) vermiş.")
-                            
+                                logs.append(f"❌ {protein_id}: Analiz HATA (Failed) vermiş.")
+                                
                             else:
-                                logs.append(f"✅ {protein_id}: İşlem tamamlanmış. Dosyalar aranıyor...")
-
-                            # 4. Dosyaları İndir (Sadece bitmişse)
-                            if is_finished:
+                                # İŞLEM BİTMİŞ
+                                logs.append(f"✅ {protein_id}: Tamamlandı. Dosyalar indiriliyor...")
+                                
                                 elements = driver.find_elements(By.TAG_NAME, "a")
-                                zip_link = None
-                                pdb_link = None
+                                zip_url = None
+                                pdb_url = None
                                 
                                 for elem in elements:
                                     href = elem.get_attribute("href")
                                     if href:
-                                        if href.endswith(".zip") and "phyre" in href:
-                                            zip_link = href
-                                        elif "final_model.pdb" in href:
-                                            pdb_link = href
+                                        # PDB Linki
+                                        if ".pdb" in href and "model" in href: 
+                                            pdb_url = href
+                                        # ZIP/TAR.GZ Linki
+                                        elif ("download" in elem.text.lower() or "zip" in href or "tar.gz" in href) and "phyre" in href:
+                                            # Görselin altındaki tekli dosyalar yerine paket indirme linkini bulmaya çalış
+                                            if ".zip" in href or ".tar.gz" in href:
+                                                zip_url = href
                                 
-                                # İndirme İşlemleri
-                                if zip_link:
-                                    z_content = download_content(zip_link)
-                                    if z_content:
-                                        master_zip.writestr(f"{folder}results.zip", z_content)
-                                        logs[-1] += " [ZIP İndi]" # Son log satırına ekle
+                                # --- İNDİRME VE KAYDETME ---
                                 
-                                if pdb_link:
-                                    p_content = download_content(pdb_link)
-                                    if p_content:
-                                        master_zip.writestr(f"{folder}model.pdb", p_content)
+                                # 1. PDB (İsim: Mdom-N-CATPase-05.pdb)
+                                if pdb_url:
+                                    pdb_data = download_content(pdb_url)
+                                    if pdb_data:
+                                        master_zip.writestr(f"{folder}{safe_id}.pdb", pdb_data)
                                         logs[-1] += " [PDB İndi]"
+                                
+                                # 2. Arşiv Dosyası (İsim: Mdom-N-CATPase-05.tar.gz)
+                                if zip_url:
+                                    zip_data = download_content(zip_url)
+                                    if zip_data:
+                                        # Uzantı tespiti (tar.gz mi zip mi?)
+                                        extension = ".zip" # Varsayılan
+                                        if ".tar.gz" in zip_url:
+                                            extension = ".tar.gz"
+                                        elif ".tgz" in zip_url:
+                                            extension = ".tar.gz"
+                                            
+                                        # Dosyayı yeni ismiyle kaydet
+                                        master_zip.writestr(f"{folder}{safe_id}{extension}", zip_data)
+                                        logs[-1] += f" [Arşiv İndi: {extension}]"
+                                    else:
+                                        logs[-1] += " [Arşiv Linki Bozuk]"
 
                         except Exception as e:
                             logs.append(f"⚠️ {protein_id} Hata: {str(e)}")
-                            # Driver hatası ise resetle
                             if "refused" in str(e) or "session" in str(e):
-                                try:
-                                    driver.quit()
-                                except:
-                                    pass
-                                driver = None
+                                try: driver.quit()
+                                except: pass
+                                driver = get_driver()
                         
-                        # Logları Ekrana Bas (Placeholder kullanarak temiz görüntü)
-                        # Listeyi ters çevirip basıyoruz ki en son işlem en üstte görünsün
-                        log_text = "\n".join(reversed(logs))
-                        log_placeholder.code(log_text, language="text")
+                        log_container.code("\n".join(reversed(logs)), language="text")
 
-                status_text.success("İşlem Tamamlandı!")
+                if driver: driver.quit()
                 
-                master_zip_buffer.seek(0)
-                st.download_button(
-                    label="📦 SONUÇLARI İNDİR (ZIP)",
-                    data=master_zip_buffer,
-                    file_name="Phyre2_Scan_Results.zip",
-                    mime="application/zip",
-                    type="primary"
-                )
+                # Session State Kaydı
+                st.session_state.processed_data = master_zip_buffer.getvalue()
+                st.session_state.logs = logs
+                st.session_state.is_finished = True
+                st.rerun()
                 
             except Exception as main_e:
-                st.error(f"Genel Hata: {main_e}")
-            finally:
-                if driver:
-                    driver.quit()
+                st.error(f"Kritik Hata: {main_e}")
+                if driver: driver.quit()
+
+# --- SONUÇ EKRANI ---
+if st.session_state.is_finished and st.session_state.processed_data:
+    st.success("Tüm işlemler tamamlandı!")
+    
+    st.write("### 📝 İşlem Özeti")
+    st.code("\n".join(reversed(st.session_state.logs)), language="text")
+    
+    st.download_button(
+        label="📦 TOPLU DOSYALARI İNDİR (ZIP)",
+        data=st.session_state.processed_data,
+        file_name="Phyre2_Results_Pack.zip",
+        mime="application/zip",
+        type="primary"
+    )
