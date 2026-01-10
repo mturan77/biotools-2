@@ -4,8 +4,6 @@ import requests
 import time
 import zipfile
 import io
-import re
-import os
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -15,17 +13,10 @@ from selenium.webdriver.common.by import By
 # --- SAYFA AYARLARI ---
 st.set_page_config(page_title="Phyre2 Scraper & Downloader", page_icon="🕷️", layout="wide")
 
-st.markdown("""
-<style>
-    .stProgress > div > div > div > div { background-color: #4CAF50; }
-</style>
-""", unsafe_allow_html=True)
-
 st.title("🕷️ Phyre2 Sonuç Toplayıcı (Scraper)")
-st.info("Bu modül, yüklenen CSV'deki linklere giderek; Screenshot, ZIP ve PDB dosyalarını tek pakette toplar.")
+st.info("Bu modül, Phyre2 sonuç sayfalarını kontrol eder. İşlem bitmişse dosyaları indirir, bitmemişse durumunu raporlar.")
 
-# --- SELENIUM AYARLARI ---
-# @st.cache_resource KULLANMIYORUZ. Scraper işlemlerinde driver'ın taze olması önemlidir.
+# --- SELENIUM DRIVER KURULUMU ---
 def get_driver():
     chrome_options = Options()
     chrome_options.add_argument("--headless")
@@ -39,44 +30,48 @@ def get_driver():
         driver = webdriver.Chrome(service=service, options=chrome_options)
     except:
         driver = webdriver.Chrome(options=chrome_options)
-        
     return driver
 
 # --- DOSYA İNDİRME FONKSİYONU ---
 def download_content(url):
     try:
-        # User-agent eklemek bazen bağlantı reddini engeller
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        headers = {'User-Agent': 'Mozilla/5.0'}
         r = requests.get(url, stream=True, timeout=60, headers=headers)
         if r.status_code == 200:
             return r.content
-    except Exception as e:
+    except:
         return None
     return None
 
-# --- DOSYA YÜKLEME ALANI ---
-uploaded_file = st.file_uploader("Önceki adımda indirdiğiniz CSV dosyasını yükleyin", type=["csv"])
+# --- DOSYA YÜKLEME ---
+uploaded_file = st.file_uploader("CSV dosyasını yükleyin", type=["csv"])
 
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
     
     if "Result Link" not in df.columns:
-        st.error("Hata: CSV dosyasında 'Result Link' sütunu bulunamadı.")
+        st.error("Hata: 'Result Link' sütunu bulunamadı.")
     else:
         df = df.dropna(subset=["Result Link"])
         df = df[df["Result Link"].str.contains("http")]
         
-        st.write(f"**İşlenecek Toplam Protein:** {len(df)}")
+        st.write(f"**Kontrol Edilecek Link:** {len(df)}")
         
-        if st.button("🚀 Scraper'ı Başlat", type="primary"):
+        if st.button("🚀 Başlat", type="primary"):
             
             master_zip_buffer = io.BytesIO()
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            log_box = st.expander("Detaylı İşlem Logları", expanded=True)
-            logs = []
             
-            # Driver'ı başlat
+            # İlerleme Çubuğu
+            progress_bar = st.progress(0)
+            
+            # Anlık Durum Metni (Üstte görünür)
+            status_text = st.empty()
+            
+            # Log Alanı (Sürekli güncellenen tek bir kutu)
+            st.write("### 📝 İşlem Logları")
+            log_placeholder = st.empty() 
+            
+            logs = []
             driver = None
             
             try:
@@ -89,73 +84,88 @@ if uploaded_file:
                         url = row["Result Link"]
                         folder = f"{protein_id}/"
                         
-                        status_text.text(f"Processing ({i+1}/{total}): {protein_id}...")
+                        # Kullanıcıya şu an ne yaptığımızı göster
+                        status_text.info(f"İşleniyor ({i+1}/{total}): {protein_id}")
                         progress_bar.progress((i+1)/total)
                         
-                        # --- DRIVER YÖNETİMİ VE HATA TOLERANSI ---
                         try:
-                            # Eğer driver çökmüşse veya hiç açılmamışsa yeniden başlat
                             if driver is None:
                                 driver = get_driver()
 
                             # 1. Sayfaya Git
                             driver.get(url)
-                            time.sleep(3) # Bekleme süresini biraz artırdık
+                            time.sleep(2)
                             
-                            # 2. Screenshot Al
+                            # Sayfa içeriğini metin olarak al (Kontrol için)
+                            page_text = driver.find_element(By.TAG_NAME, "body").text
+                            
+                            # 2. Screenshot Al (Her durumda alıyoruz, kanıt olsun)
                             png_data = driver.get_screenshot_as_png()
-                            master_zip.writestr(f"{folder}view.png", png_data)
-                            logs.append(f"✅ {protein_id}: Screenshot alındı.")
+                            master_zip.writestr(f"{folder}status_view.png", png_data)
                             
-                            # 3. Linkleri Bul
-                            elements = driver.find_elements(By.TAG_NAME, "a")
-                            zip_link = None
-                            pdb_link = None
+                            # 3. DURUM KONTROLÜ (Kritik Bölüm)
+                            # Phyre2 bitmemiş işlerde "Job Status", "Queue" veya "Estimated" kelimelerini gösterir.
+                            is_finished = True
+                            if "Job Status" in page_text or "Estimated total processing time" in page_text:
+                                is_finished = False
+                                logs.append(f"⏳ {protein_id}: HENÜZ BİTMEMİŞ. (Screenshot alındı, dosya yok)")
                             
-                            for elem in elements:
-                                href = elem.get_attribute("href")
-                                if href:
-                                    if href.endswith(".zip") and "phyre" in href:
-                                        zip_link = href
-                                    elif "final_model.pdb" in href:
-                                        pdb_link = href
+                            elif "FAILED" in page_text:
+                                is_finished = False
+                                logs.append(f"❌ {protein_id}: Phyre2 işlemi HATA (Failed) vermiş.")
                             
-                            # 4. İndir
-                            if zip_link:
-                                z_content = download_content(zip_link)
-                                if z_content:
-                                    master_zip.writestr(f"{folder}results.zip", z_content)
-                            
-                            if pdb_link:
-                                p_content = download_content(pdb_link)
-                                if p_content:
-                                    master_zip.writestr(f"{folder}model.pdb", p_content)
-                                    
+                            else:
+                                logs.append(f"✅ {protein_id}: İşlem tamamlanmış. Dosyalar aranıyor...")
+
+                            # 4. Dosyaları İndir (Sadece bitmişse)
+                            if is_finished:
+                                elements = driver.find_elements(By.TAG_NAME, "a")
+                                zip_link = None
+                                pdb_link = None
+                                
+                                for elem in elements:
+                                    href = elem.get_attribute("href")
+                                    if href:
+                                        if href.endswith(".zip") and "phyre" in href:
+                                            zip_link = href
+                                        elif "final_model.pdb" in href:
+                                            pdb_link = href
+                                
+                                # İndirme İşlemleri
+                                if zip_link:
+                                    z_content = download_content(zip_link)
+                                    if z_content:
+                                        master_zip.writestr(f"{folder}results.zip", z_content)
+                                        logs[-1] += " [ZIP İndi]" # Son log satırına ekle
+                                
+                                if pdb_link:
+                                    p_content = download_content(pdb_link)
+                                    if p_content:
+                                        master_zip.writestr(f"{folder}model.pdb", p_content)
+                                        logs[-1] += " [PDB İndi]"
+
                         except Exception as e:
-                            # HATA YÖNETİMİ: Driver hatası ise driver'ı öldür ki sonraki döngüde yenisi açılsın
-                            error_msg = str(e)
-                            logs.append(f"❌ {protein_id} Hata: {error_msg}")
-                            
-                            # Eğer bağlantı hatası varsa driver'ı sıfırla
-                            if "Connection refused" in error_msg or "disconnected" in error_msg or "invalid session" in error_msg:
-                                logs.append("⚠️ Driver bağlantısı koptu, yeniden başlatılıyor...")
+                            logs.append(f"⚠️ {protein_id} Hata: {str(e)}")
+                            # Driver hatası ise resetle
+                            if "refused" in str(e) or "session" in str(e):
                                 try:
                                     driver.quit()
                                 except:
                                     pass
-                                driver = None # Bu değişkeni None yaparak bir sonraki turda yeniden açılmasını sağlıyoruz
+                                driver = None
                         
-                        # Logları güncelle
-                        if i % 2 == 0: 
-                             log_box.write("\n".join(logs[-10:])) # Sadece son 10 logu göster (performans için)
+                        # Logları Ekrana Bas (Placeholder kullanarak temiz görüntü)
+                        # Listeyi ters çevirip basıyoruz ki en son işlem en üstte görünsün
+                        log_text = "\n".join(reversed(logs))
+                        log_placeholder.code(log_text, language="text")
 
-                status_text.success("Tüm işlemler tamamlandı! Aşağıdan indirebilirsiniz.")
+                status_text.success("İşlem Tamamlandı!")
                 
                 master_zip_buffer.seek(0)
                 st.download_button(
-                    label="📦 TOPLU İNDİR (ZIP)",
+                    label="📦 SONUÇLARI İNDİR (ZIP)",
                     data=master_zip_buffer,
-                    file_name="Phyre2_Full_Results.zip",
+                    file_name="Phyre2_Scan_Results.zip",
                     mime="application/zip",
                     type="primary"
                 )
@@ -163,9 +173,5 @@ if uploaded_file:
             except Exception as main_e:
                 st.error(f"Genel Hata: {main_e}")
             finally:
-                # En sonda driver açıksa kapat
                 if driver:
-                    try:
-                        driver.quit()
-                    except:
-                        pass
+                    driver.quit()
