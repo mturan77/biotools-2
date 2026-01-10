@@ -107,7 +107,6 @@ if operation_mode == "🔍 Monitor Mode (Watch Only)":
     uploaded_file = st.file_uploader("Upload CSV for Monitoring", type=["csv"], key="monitor_csv")
     
     # Refresh Rate Slider (Dinamik Süre Ayarı için)
-    # Bu slider değiştiğinde kod rerun olur, aşağıda kalan süreyi yeni değere göre hesaplarız.
     refresh_minutes = st.sidebar.slider("Cycle Wait Time (Minutes)", min_value=1, max_value=120, value=15)
     
     if uploaded_file:
@@ -208,14 +207,14 @@ if operation_mode == "🔍 Monitor Mode (Watch Only)":
                             # Analiz
                             res = analyze_page_status(driver, url)
                             
-                            # Listeye ekle (Link sütunu değişmedi, orijinal URL'yi tutuyoruz)
+                            # Listeye ekle
                             results_list.append({
                                 "Protein ID": protein_id,
                                 "Status": res["status"],
                                 "Current Stage": res["details"],
                                 "Est. Time": res["est_time"],
                                 "Last Checked": datetime.now().strftime("%H:%M:%S"),
-                                "Result Link": url  # Bu sütun dataframe config ile linke dönüşecek
+                                "Result Link": url
                             })
                             
                         # Tarama bitti
@@ -228,13 +227,12 @@ if operation_mode == "🔍 Monitor Mode (Watch Only)":
                         st.error(f"Error during scan: {e}")
                     finally:
                         driver.quit()
-                        st.rerun() # Tarama bitince bekleme moduna geçmek için hemen rerun
+                        st.rerun()
 
 # ==========================================
 # MODE 2: DOWNLOADER MODE (HARVEST)
 # ==========================================
 elif operation_mode == "⬇️ Downloader Mode (Harvest)":
-    # (Önceki kodun aynısı - değişiklik yok)
     st.markdown("### 📦 Data Acquisition & Packaging Module")
     st.info("This mode executes the final retrieval protocol: downloading PDB/Archive files and generating a Master ZIP.")
     
@@ -328,7 +326,13 @@ elif operation_mode == "⬇️ Downloader Mode (Harvest)":
                             except Exception as e:
                                 logs.append(f"⚠️ {safe_id} Error: {str(e)}")
                                 if "refused" in str(e) or "session" in str(e):
-                                    try: driver.quit(); except: pass; driver = get_driver()
+                                    # --- FIX IS HERE ---
+                                    try: 
+                                        driver.quit()
+                                    except: 
+                                        pass
+                                    driver = get_driver()
+                                    # -------------------
                             
                             log_cont.code("\n".join(reversed(logs)), language="text")
                 
