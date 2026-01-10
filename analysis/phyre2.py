@@ -106,7 +106,7 @@ def reset_app():
     st.rerun()
 
 # --- BAŞLIK ---
-st.title("🧬 Phyre2 Protein Modelling Automation (Fix v2)")
+st.title("🧬 Phyre2 Protein Modelling Automation")
 st.markdown("Automated tool with **Persistent State**. Data is safe during download.")
 st.divider()
 
