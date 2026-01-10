@@ -12,7 +12,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.by import By
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="Phyre2 Scraper Pro", page_icon="🧬", layout="wide")
+st.set_page_config(page_title="Phyre2 Results", page_icon="🧬", layout="wide")
 
 # --- OTURUM (SESSION) ---
 if 'processed_data' not in st.session_state:
@@ -56,7 +56,7 @@ def reset_app():
     st.rerun()
 
 # --- ARAYÜZ ---
-st.title("🧬 Phyre2 Kesin Sonuç Toplayıcı")
+st.title("🧬 Phyre2 Results")
 
 if st.session_state.is_finished:
     st.warning("⚠️ İşlem tamamlandı. Yeni dosya yüklemek için aşağıdaki butona basın.")
