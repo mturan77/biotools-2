@@ -3,3 +3,5 @@ selenium
 beautifulsoup4
 requests
 openpyxl
+pandas
+webdriver-manager
