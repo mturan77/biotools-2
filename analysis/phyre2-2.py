@@ -116,28 +116,60 @@ def fetch_single_protein_data_to_temp(url, protein_id):
 def analyze_page_status(driver, url):
     try:
         driver.get(url)
-        time.sleep(1)
+        # Sayfanın tam oturması için süreyi biraz artırdık (garanti olsun)
+        time.sleep(2) 
+        
         page_source = driver.page_source
-        page_text = driver.find_element(By.TAG_NAME, "body").text
+        # Büyük/küçük harf duyarlılığını kaldırmak için lower() yaptık
+        page_text = driver.find_element(By.TAG_NAME, "body").text.lower()
         
         time_match = re.search(r"Estimated total processing time.*?:(.*?)(<|\n)", page_source, re.IGNORECASE)
-        step_match = re.search(r"(\d+\.\s+[^\n\r]+)", page_text)
+        step_match = re.search(r"(\d+\.\s+[^\n\r]+)", page_text) # Regex text üzerinde çalışır
         
         status_data = {"status": "Unknown", "details": "-", "est_time": "-", "is_complete": False}
 
-        if "FAILED" in page_text:
-            status_data["status"] = "FAILED"; status_data["details"] = "Error"
-        elif "Job Status" in page_text or "Queue" in page_text or "Estimated" in page_text:
-            if "Download zip of all results" not in page_text:
-                status_data["status"] = "RUNNING"
-                status_data["est_time"] = time_match.group(1).strip() if time_match else "Calculating..."
-                status_data["details"] = step_match.group(1).strip() if step_match else "Init..."
-            else:
-                status_data["status"] = "COMPLETE"; status_data["details"] = "Ready"; status_data["is_complete"] = True
-                status_data["est_time"] = "Done"
-        else:
-            status_data["status"] = "COMPLETE"; status_data["details"] = "Ready"; status_data["is_complete"] = True
+        # 1. Önce HATA var mı bakalım
+        if "failed" in page_text:
+            status_data["status"] = "FAILED"
+            status_data["details"] = "Error"
+            return status_data
+
+        # 2. İŞ BİTMİŞ Mİ? (Kesin Kanıt: ZIP Linki Var mı?)
+        # Yazı yazmasa bile, indirme linki varsa bitmiştir.
+        has_zip_link = False
+        try:
+            links = driver.find_elements(By.TAG_NAME, "a")
+            for link in links:
+                href = link.get_attribute("href")
+                if href and (("phyre" in href and ".tar.gz" in href) or "results.zip" in href):
+                    has_zip_link = True
+                    break
+        except:
+            pass
+
+        # "Download..." yazısı VEYA zip linki varsa COMPLETE'dir.
+        if "download zip of all results" in page_text or "job complete" in page_text or has_zip_link:
+            status_data["status"] = "COMPLETE"
+            status_data["details"] = "Ready"
             status_data["est_time"] = "Done"
+            status_data["is_complete"] = True
+            return status_data
+
+        # 3. Hata yok, Bitmemiş -> O zaman RUNNING'dir
+        if "job status" in page_text or "queue" in page_text or "estimated" in page_text:
+            status_data["status"] = "RUNNING"
+            status_data["est_time"] = time_match.group(1).strip() if time_match else "Calculating..."
+            
+            # Step match büyük harf sorunu yaşamaması için tekrar raw textten çekilebilir veya
+            # page_text lower olduğu için regex ona göre ayarlanmalıydı ama basitçe:
+            status_data["details"] = step_match.group(1).strip() if step_match else "Processing..."
+            return status_data
+        
+        # 4. Hiçbir şeye uymuyorsa, muhtemelen bitmiştir (Fallback)
+        status_data["status"] = "COMPLETE"
+        status_data["details"] = "Ready"
+        status_data["est_time"] = "Done"
+        status_data["is_complete"] = True
             
         return status_data
     except Exception as e:
