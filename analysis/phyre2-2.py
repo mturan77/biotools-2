@@ -489,7 +489,7 @@ elif operation_mode == "⬇️ Downloader Mode":
                         st.download_button(
                             label="💾 ZIP Dosyasını İndir",
                             data=master_zip_buffer.getvalue(),
-                            file_name="Phyre2_Toplu_Temp_Sonuc.zip",
+                            file_name="Phyre2_Toplu_Sonuc.zip",
                             mime="application/zip"
                         )
             else:
