@@ -108,8 +108,8 @@ if operation_mode == "🔍 Monitor Mode (Watch Only)":
     
     uploaded_file = st.file_uploader("Upload CSV for Monitoring", type=["csv"], key="monitor_csv")
     
-    # Refresh Interval Selection
-    refresh_rate = st.sidebar.slider("Auto-Refresh Interval (Minutes)", min_value=5, max_value=60, value=15)
+    # REFRESH RATE UPDATED: MIN 1 MINUTE
+    refresh_rate = st.sidebar.slider("Auto-Refresh Interval (Minutes)", min_value=1, max_value=60, value=15)
     
     if uploaded_file:
         df = pd.read_csv(uploaded_file)
@@ -128,7 +128,7 @@ if operation_mode == "🔍 Monitor Mode (Watch Only)":
                 table_container = st.empty()
                 
                 try:
-                    # Infinite Loop for Monitoring (User stops by closing tab or clicking stop)
+                    # Infinite Loop for Monitoring
                     iteration = 0
                     while True:
                         iteration += 1
