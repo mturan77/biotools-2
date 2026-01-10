@@ -8,6 +8,7 @@ import re
 import os
 import shutil
 import tempfile
+import streamlit.components.v1 as components # Javascript için eklendi
 from datetime import datetime, timedelta
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -135,6 +136,7 @@ def analyze_page_status(driver, url):
         page_source = driver.page_source
         page_text = driver.find_element(By.TAG_NAME, "body").text
         
+        # Regex ile zamanı yakala
         time_match = re.search(r"Estimated total processing time.*?:(.*?)(<|\n)", page_source, re.IGNORECASE)
         step_match = re.search(r"(\d+\.\s+[^\n\r]+)", page_text)
         
@@ -145,16 +147,32 @@ def analyze_page_status(driver, url):
         elif "Job Status" in page_text or "Queue" in page_text or "Estimated" in page_text:
             if "Download zip of all results" not in page_text:
                 status_data["status"] = "RUNNING"
+                # Estimated Time'ı burada parse ediyoruz
                 status_data["est_time"] = time_match.group(1).strip() if time_match else "Calculating..."
                 status_data["details"] = step_match.group(1).strip() if step_match else "Init..."
             else:
                 status_data["status"] = "COMPLETE"; status_data["details"] = "Ready"; status_data["is_complete"] = True
+                status_data["est_time"] = "Done"
         else:
             status_data["status"] = "COMPLETE"; status_data["details"] = "Ready"; status_data["is_complete"] = True
+            status_data["est_time"] = "Done"
             
         return status_data
     except Exception as e:
         return {"status": "ERROR", "details": str(e), "est_time": "-", "is_complete": False}
+
+# --- JS SCROLL HELPER ---
+def scroll_to_table():
+    # Sayfa yenilendiğinde tabloya kaydırmak için küçük bir script
+    js = """
+    <script>
+        var element = document.getElementById("monitor_anchor");
+        if(element) {
+            element.scrollIntoView({behavior: "smooth", block: "start"});
+        }
+    </script>
+    """
+    st.components.v1.html(js, height=0)
 
 # --- SESSION STATE ---
 if 'monitor_active' not in st.session_state: st.session_state.monitor_active = False
@@ -178,7 +196,7 @@ operation_mode = st.sidebar.radio("Select Protocol:", ("🔍 Monitor Mode", "⬇
 skip_completed = st.sidebar.checkbox("✅ Bitenleri Tekrar Tarama", value=True, help="Complete olanları atlar.")
 
 st.sidebar.markdown("---")
-# --- RESET CACHE BUTTON (İsteğin üzerine) ---
+# --- RESET CACHE BUTTON ---
 if st.sidebar.button("🗑️ Önbelleği Sıfırla", help="İndirilenlerin durumunu temizler. Dosyaları unutturur."):
     st.session_state.file_manager = {}
     st.success("Önbellek temizlendi!")
@@ -191,9 +209,12 @@ st.title("🧬 Phyre2 Smart Manager")
 # AKILLI TABLO ÇİZİCİ (MONITOR MODU)
 # ==========================================
 def render_results_table(data_list, show_buttons=True):
-    h1, h2, h3, h4, h5 = st.columns([2, 1.5, 2, 1, 2.5])
+    # SÜTUN AYARLARI: Est. Time eklendi, oranlar güncellendi
+    # Protein ID | Status | Est. Time | Current Stage | Link | File Manager
+    h1, h2, h_time, h3, h4, h5 = st.columns([1.8, 1.2, 1.2, 2, 0.8, 2.5])
     h1.markdown("**Protein ID**")
     h2.markdown("**Status**")
+    h_time.markdown("**Est. Time**") # YENİ SÜTUN
     h3.markdown("**Current Stage**")
     h4.markdown("**Link**")
     h5.markdown("**File Manager**") 
@@ -204,11 +225,16 @@ def render_results_table(data_list, show_buttons=True):
         safe_pid = pid.replace(" ", "_")
         status = item["Status"]
         
-        c1, c2, c3, c4, c5 = st.columns([2, 1.5, 2, 1, 2.5])
+        c1, c2, c_time, c3, c4, c5 = st.columns([1.8, 1.2, 1.2, 2, 0.8, 2.5])
         
         c1.write(pid)
         color = "orange" if status == "RUNNING" else "green" if status == "COMPLETE" else "red"
         c2.markdown(f":{color}[{status}]")
+        
+        # Est. Time verisi
+        est_val = item.get("Est Time", "-")
+        c_time.write(est_val) 
+
         c3.write(item["Current Stage"])
         c4.markdown(f"[🔗 Open]({item['Result Link']})")
         
@@ -238,9 +264,7 @@ def render_results_table(data_list, show_buttons=True):
                 if show_buttons:
                     c5.write("🗑️ *Silindi*")
                     if c5.button("♻️ Getir", key=f"refetch_{safe_pid}"):
-                        # !!! GLITCH FIX: Sayacı durdur !!!
                         st.session_state.last_scan_time = datetime.now()
-                        
                         with st.spinner("Temp klasörüne çekiliyor..."):
                             success, data = fetch_single_protein_data_to_temp(item["Result Link"], safe_pid)
                             if success:
@@ -253,13 +277,7 @@ def render_results_table(data_list, show_buttons=True):
             else:
                 if show_buttons:
                     if c5.button("📥 Getir", key=f"fetch_{safe_pid}"):
-                        # ==========================================
-                        # !!! GLITCH FIX: KRİTİK NOKTA !!!
-                        # Butona basıldığı an zamanlayıcıyı ŞİMDİ'ye çekiyoruz.
-                        # Böylece loop devreye girip sayfayı yenilemiyor.
-                        # ==========================================
                         st.session_state.last_scan_time = datetime.now()
-                        
                         with st.spinner("Geçici (Temp) klasörde hazırlanıyor... Sayaç duraklatıldı."):
                             success, data = fetch_single_protein_data_to_temp(item["Result Link"], safe_pid)
                             if success:
@@ -300,6 +318,10 @@ if operation_mode == "🔍 Monitor Mode":
 
         st.divider()
 
+        # --- SCROLL ANCHOR (YENİ EKLENTİ) ---
+        # Sayfa yenilendiğinde buraya odaklanacak
+        st.markdown('<div id="monitor_anchor"></div>', unsafe_allow_html=True)
+
         # Monitor Logic
         if st.session_state.monitor_active:
             now = datetime.now()
@@ -316,9 +338,16 @@ if operation_mode == "🔍 Monitor Mode":
                 else:
                     # Bekleme Modu
                     seconds_left = (target_wait - time_diff).total_seconds()
-                    st.caption(f"⏳ Bir sonraki tarama: {int(seconds_left // 60)}dk {int(seconds_left % 60)}sn")
+                    
+                    # Zamanlayıcıyı tablonun hemen üstünde göster ki odak orada kalsın
+                    t1, t2 = st.columns([3,1])
+                    t1.caption(f"⏳ Bir sonraki tarama: {int(seconds_left // 60)}dk {int(seconds_left % 60)}sn")
+                    
                     if st.session_state.latest_results_list:
                         render_results_table(st.session_state.latest_results_list, show_buttons=True)
+                        # Tablo çizildi, şimdi scroll yap
+                        scroll_to_table()
+                    
                     time.sleep(1)
                     st.rerun()
 
@@ -341,6 +370,7 @@ if operation_mode == "🔍 Monitor Mode":
                             temp_results_list.append({
                                 "Protein ID": protein_id,
                                 "Status": "COMPLETE",
+                                "Est Time": "Done",
                                 "Current Stage": "Hazır (Önbellek)",
                                 "Result Link": url
                             })
@@ -356,6 +386,7 @@ if operation_mode == "🔍 Monitor Mode":
                             temp_results_list.append({
                                 "Protein ID": protein_id,
                                 "Status": res["status"],
+                                "Est Time": res["est_time"], # Veriyi listeye ekledik
                                 "Current Stage": res["details"],
                                 "Result Link": url
                             })
@@ -409,6 +440,7 @@ elif operation_mode == "⬇️ Downloader Mode":
                     temp_results.append({
                         "Protein ID": pid,
                         "Status": res["status"],
+                        "Est Time": res["est_time"], # Buraya da ekledik, ne olur ne olmaz
                         "Result Link": url
                     })
                     progress_bar.progress((index + 1) / total)
@@ -435,7 +467,6 @@ elif operation_mode == "⬇️ Downloader Mode":
                 
                 if st.button(f"📦 Bitenleri (Temp Üzerinden) Paketle ve İndir", type="primary"):
                     
-                    # Master ZIP da aslında bir binary stream'dir ama içini temp'ten dolduracağız
                     master_zip_buffer = io.BytesIO()
                     
                     with st.spinner("Dosyalar Temp klasörüne indiriliyor ve paketleniyor..."):
@@ -448,8 +479,6 @@ elif operation_mode == "⬇️ Downloader Mode":
                                 url = job["Result Link"]
                                 safe_pid = pid.replace(" ", "_")
                                 
-                                # fetch_single_protein_data_to_temp fonksiyonunu kullanıyoruz
-                                # Bu fonksiyon arkada fiziksel klasör açıp indirip bize zip binary dönüyor
                                 success, zip_data = fetch_single_protein_data_to_temp(url, safe_pid)
                                 
                                 if success:
