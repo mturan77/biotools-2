@@ -112,17 +112,28 @@ if uploaded_file and not st.session_state.is_finished:
                             png_data = driver.get_screenshot_as_png()
                             master_zip.writestr(f"{folder}status_view.png", png_data)
                             
-                            # 2. DURUM KONTROLÜ
+                            # 2. DURUM KONTROLÜ (DÜZELTİLDİ)
+                            # Tahmini süre regex'i
                             time_match = re.search(r"Estimated total processing time.*?:(.*?)(<|\n)", page_source, re.IGNORECASE)
-                            step_match = re.search(r"(\d+\.\s+[A-Za-z\s]+)", page_text)
+                            # Adım regex'i (GÜNCEL): Sadece satır sonuna kadar alır ([^\n]+), alt satıra geçmez.
+                            step_match = re.search(r"(\d+\.\s+[^\n]+)", page_text)
                             
                             if "Job Status" in page_text or "Queue" in page_text or "Estimated" in page_text:
-                                est_time = time_match.group(1).strip() if time_match else "Hesaplanıyor..."
-                                step_info = step_match.group(1).strip() if step_match else "Sırada/Başlıyor"
+                                est_time = time_match.group(1).strip() if time_match else "Bilinmiyor"
+                                
+                                # Step bilgisini temizle
+                                if step_match:
+                                    step_info = step_match.group(1).strip()
+                                    # Bazen text çok uzun olabilir, garanti olsun diye ilk 40 karakteri alalım
+                                    if len(step_info) > 60:
+                                        step_info = step_info[:60] + "..."
+                                else:
+                                    step_info = "Hazırlanıyor"
                                 
                                 # Eğer gerçekten indirme butonu yoksa bitmemiş say:
                                 if "Download zip of all results" not in page_text:
-                                    logs.append(f"⏳ {safe_id}: {step_info} | Süre: {est_time}")
+                                    # TEK SATIRDA YAZDIRMA DÜZENİ
+                                    logs.append(f"⏳ {safe_id}: {step_info} (Tahmini Süre: {est_time})")
                             
                             if "FAILED" in page_text:
                                 logs.append(f"❌ {safe_id}: Analiz BAŞARISIZ (Failed).")
@@ -132,15 +143,13 @@ if uploaded_file and not st.session_state.is_finished:
                             zip_url = None
                             pdb_url = None
                             
-                            # --- PDB BULMA STRATEJİSİ ---
-                            # 1. Öncelik: final.casp.pdb
+                            # PDB BULMA
                             for elem in elements:
                                 href = elem.get_attribute("href")
                                 if href and "final.casp.pdb" in href:
                                     pdb_url = href
-                                    break # En iyisini bulduk, döngüden çık.
+                                    break 
                             
-                            # 2. Öncelik (Eğer ilki bulunamazsa): final_model.pdb
                             if not pdb_url:
                                 for elem in elements:
                                     href = elem.get_attribute("href")
@@ -148,15 +157,13 @@ if uploaded_file and not st.session_state.is_finished:
                                         pdb_url = href
                                         break
                                         
-                            # --- ARŞİV (TAR/ZIP) BULMA STRATEJİSİ ---
+                            # ARŞİV (TAR/ZIP) BULMA
                             for elem in elements:
                                 href = elem.get_attribute("href")
                                 if href:
-                                    # Kesinlikle .tar.gz olanı bul
                                     if href.endswith(".tar.gz") and "phyre" in href:
                                         zip_url = href
-                                        break # Bulduk
-                                    # Yoksa .zip olup içinde results geçen
+                                        break 
                                     elif href.endswith(".zip") and "results" in href and not zip_url:
                                         zip_url = href
 
@@ -164,7 +171,7 @@ if uploaded_file and not st.session_state.is_finished:
                             found_files = False
                             status_msg = f"✅ {safe_id}: "
                             
-                            # PDB İNDİR (İsim: Mdom-N-CATPase-05.pdb)
+                            # PDB
                             if pdb_url:
                                 p_content = download_content(pdb_url)
                                 if p_content:
@@ -174,7 +181,7 @@ if uploaded_file and not st.session_state.is_finished:
                                 else:
                                     status_msg += "[PDB Hata] "
                             
-                            # ARŞİV İNDİR (İsim: Mdom-N-CATPase-05.tar.gz)
+                            # ARŞİV
                             if zip_url:
                                 z_content = download_content(zip_url)
                                 if z_content:
