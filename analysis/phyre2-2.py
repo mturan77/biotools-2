@@ -13,7 +13,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.by import By
 
 # --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="Phyre2 Pro Monitor", page_icon="🧬", layout="wide")
+st.set_page_config(page_title="Phyre2 Smart Manager", page_icon="🧬", layout="wide")
 
 # --- UTILS & DRIVER SETUP ---
 def get_driver():
@@ -42,25 +42,22 @@ def download_content(url):
 
 # --- TEKİL İNDİRME FONKSİYONU ---
 def fetch_single_protein_data(url, protein_id):
-    """Tek bir protein için indirme işlemini yapar ve zip verisini döner."""
     driver = get_driver()
     zip_buffer = io.BytesIO()
-    logs = []
     success = False
     
     try:
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as single_zip:
             folder = f"{protein_id}/"
-            
-            # Sayfaya git
             driver.get(url)
             time.sleep(2)
             
-            # Screenshot al
-            png_data = driver.get_screenshot_as_png()
-            single_zip.writestr(f"{folder}status_view.png", png_data)
+            # Screenshot
+            try:
+                png_data = driver.get_screenshot_as_png()
+                single_zip.writestr(f"{folder}status_view.png", png_data)
+            except: pass
             
-            # Linkleri bul
             elements = driver.find_elements(By.TAG_NAME, "a")
             pdb_url, zip_url = None, None
             
@@ -78,21 +75,25 @@ def fetch_single_protein_data(url, protein_id):
                     if href.endswith(".tar.gz") and "phyre" in href: zip_url = href; break
                     elif href.endswith(".zip") and "results" in href and not zip_url: zip_url = href
             
-            # Dosyaları indir
+            found_any = False
             if pdb_url:
                 c = download_content(pdb_url)
-                if c: single_zip.writestr(f"{folder}{protein_id}.pdb", c)
+                if c: 
+                    single_zip.writestr(f"{folder}{protein_id}.pdb", c)
+                    found_any = True
             
             if zip_url:
                 c = download_content(zip_url)
                 if c: 
                     ext = ".tar.gz" if ".tar.gz" in zip_url else ".zip"
                     single_zip.writestr(f"{folder}{protein_id}{ext}", c)
+                    found_any = True
             
-            success = True
+            if found_any:
+                success = True
             
     except Exception as e:
-        logs.append(str(e))
+        print(e)
     finally:
         driver.quit()
         
@@ -102,7 +103,7 @@ def fetch_single_protein_data(url, protein_id):
 def analyze_page_status(driver, url):
     try:
         driver.get(url)
-        time.sleep(1.5)
+        time.sleep(1)
         page_source = driver.page_source
         page_text = driver.find_element(By.TAG_NAME, "body").text
         
@@ -112,12 +113,12 @@ def analyze_page_status(driver, url):
         status_data = {"status": "Unknown", "details": "-", "est_time": "-", "is_complete": False}
 
         if "FAILED" in page_text:
-            status_data["status"] = "FAILED"; status_data["details"] = "Error Detected"
+            status_data["status"] = "FAILED"; status_data["details"] = "Error"
         elif "Job Status" in page_text or "Queue" in page_text or "Estimated" in page_text:
             if "Download zip of all results" not in page_text:
                 status_data["status"] = "RUNNING"
                 status_data["est_time"] = time_match.group(1).strip() if time_match else "Calculating..."
-                status_data["details"] = step_match.group(1).strip() if step_match else "Initializing..."
+                status_data["details"] = step_match.group(1).strip() if step_match else "Init..."
             else:
                 status_data["status"] = "COMPLETE"; status_data["details"] = "Ready"; status_data["is_complete"] = True
         else:
@@ -127,104 +128,136 @@ def analyze_page_status(driver, url):
     except Exception as e:
         return {"status": "ERROR", "details": str(e), "est_time": "-", "is_complete": False}
 
-# --- SESSION STATE ---
+# --- SESSION STATE (AKILLI HAFIZA) ---
 if 'monitor_active' not in st.session_state: st.session_state.monitor_active = False
 if 'last_scan_time' not in st.session_state: st.session_state.last_scan_time = None
 if 'latest_results_list' not in st.session_state: st.session_state.latest_results_list = []
 if 'cycle_count' not in st.session_state: st.session_state.cycle_count = 0
-if 'download_ready' not in st.session_state: st.session_state.download_ready = {} # ID: Data mapping
+
+# Dosya Yöneticisi: { 'ProteinID': {'data': binary, 'status': 'saved'/'deleted'} }
+if 'file_manager' not in st.session_state: st.session_state.file_manager = {}
 
 # --- SIDEBAR ---
 st.sidebar.title("🎮 Control Panel")
-operation_mode = st.sidebar.radio("Select Protocol:", ("🔍 Monitor Mode (Watch Only)", "⬇️ Downloader Mode (Harvest)"))
+operation_mode = st.sidebar.radio("Select Protocol:", ("🔍 Monitor Mode", "⬇️ Downloader Mode"))
 
-st.title("🧬 Phyre2 Automated Retrieval System")
+st.title("🧬 Phyre2 Smart Manager")
 
 # ==========================================
-# CUSTOM TABLE RENDERER
+# AKILLI TABLO ÇİZİCİ
 # ==========================================
-def render_results_table(data_list):
-    """Verilen listeyi tablo formatında, butonlarla birlikte çizer."""
-    # Başlıklar
-    h1, h2, h3, h4, h5, h6 = st.columns([2, 1.5, 2, 2, 1, 1.5])
+def render_results_table(data_list, show_buttons=True):
+    # Tablo Başlıkları
+    h1, h2, h3, h4, h5 = st.columns([2, 1.5, 2, 1, 2.5])
     h1.markdown("**Protein ID**")
     h2.markdown("**Status**")
     h3.markdown("**Current Stage**")
-    h4.markdown("**Est. Time**")
-    h5.markdown("**Link**")
-    h6.markdown("**Action**")
+    h4.markdown("**Link**")
+    h5.markdown("**File Manager**") # Aksiyon alanı genişletildi
     st.markdown("---")
 
     for item in data_list:
-        c1, c2, c3, c4, c5, c6 = st.columns([2, 1.5, 2, 2, 1, 1.5])
-        
-        c1.write(item["Protein ID"])
-        
-        # Renkli Status
-        s = item["Status"]
-        color = "orange" if s == "RUNNING" else "green" if s == "COMPLETE" else "red"
-        c2.markdown(f":{color}[{s}]")
-        
-        c3.write(item["Current Stage"])
-        c4.write(item["Est. Time"])
-        c5.markdown(f"[🔗 Link]({item['Result Link']})")
-        
-        # Aksiyon Butonu
         pid = item["Protein ID"]
         safe_pid = pid.replace(" ", "_")
+        status = item["Status"]
         
-        if s == "COMPLETE":
-            # Eğer bu ID için indirme hazırlanmışsa İndir butonu göster, yoksa Fetch butonu
-            if pid in st.session_state.download_ready:
-                c6.download_button(
-                    label="📦 Save",
-                    data=st.session_state.download_ready[pid],
+        c1, c2, c3, c4, c5 = st.columns([2, 1.5, 2, 1, 2.5])
+        
+        c1.write(pid)
+        
+        # Renkli Durum
+        color = "orange" if status == "RUNNING" else "green" if status == "COMPLETE" else "red"
+        c2.markdown(f":{color}[{status}]")
+        
+        c3.write(item["Current Stage"])
+        c4.markdown(f"[🔗 Open]({item['Result Link']})")
+        
+        # --- AKILLI BUTON MANTIĞI ---
+        if status == "COMPLETE":
+            # 1. Dosya Hafızada mı?
+            file_record = st.session_state.file_manager.get(pid)
+            
+            if file_record and file_record['status'] == 'saved':
+                # DURUM: İNDİRİLMİŞ VE KAYITLI
+                # İndirme Butonu
+                btn_col1, btn_col2 = c5.columns([1, 1])
+                btn_col1.download_button(
+                    label="💾 İndir",
+                    data=file_record['data'],
                     file_name=f"{safe_pid}_result.zip",
                     mime="application/zip",
-                    key=f"dl_final_{pid}"
+                    key=f"dl_{safe_pid}"
                 )
+                
+                # Silme Butonu (Sadece görünürlüğü siler)
+                if show_buttons:
+                    if btn_col2.button("🗑️ Sil", key=f"del_{safe_pid}"):
+                        st.session_state.file_manager[pid]['status'] = 'deleted'
+                        st.session_state.file_manager[pid]['data'] = None # Hafızayı boşalt
+                        st.rerun()
+            
+            elif file_record and file_record['status'] == 'deleted':
+                # DURUM: KULLANICI SİLMİŞ
+                if show_buttons:
+                    c5.write("🗑️ *Silindi*")
+                    if c5.button("♻️ Yeniden İndir", key=f"refetch_{safe_pid}"):
+                        with st.spinner("Tekrar getiriliyor..."):
+                            success, data = fetch_single_protein_data(item["Result Link"], safe_pid)
+                            if success:
+                                st.session_state.file_manager[pid] = {'data': data, 'status': 'saved'}
+                                st.rerun()
+                            else:
+                                st.error("Hata.")
+                else:
+                    c5.write("🗑️ Silindi")
+
             else:
-                if c6.button("📥 Fetch", key=f"fetch_{pid}"):
-                    with st.spinner(f"Harvesting {pid}..."):
-                        success, data = fetch_single_protein_data(item["Result Link"], safe_pid)
-                        if success:
-                            st.session_state.download_ready[pid] = data
-                            st.rerun() # Sayfayı yenile ki buton değişsin
-                        else:
-                            st.error("Failed.")
+                # DURUM: HİÇ İNDİRİLMEMİŞ
+                if show_buttons:
+                    if c5.button("📥 Getir (Fetch)", key=f"fetch_{safe_pid}"):
+                        with st.spinner("Veriler toplanıyor..."):
+                            success, data = fetch_single_protein_data(item["Result Link"], safe_pid)
+                            if success:
+                                st.session_state.file_manager[pid] = {'data': data, 'status': 'saved'}
+                                st.rerun()
+                            else:
+                                st.error("İndirilemedi.")
+                else:
+                    c5.caption("⏳ Bekliyor...")
         else:
-            c6.write("-")
+            c5.write("-")
 
 # ==========================================
-# MODE 1: MONITOR MODE
+# MONITOR MODE
 # ==========================================
-if operation_mode == "🔍 Monitor Mode (Watch Only)":
+if operation_mode == "🔍 Monitor Mode":
     uploaded_file = st.file_uploader("Upload CSV", type=["csv"], key="monitor_csv")
     refresh_minutes = st.sidebar.slider("Cycle Wait Time (Minutes)", 1, 120, 15)
     
-    # --- ÜST BİLGİ PANELİ ---
+    # Bilgi Paneli
     info_col1, info_col2 = st.columns([3, 1])
     with info_col1:
-        st.info(f"⏱️ **Current Loop Interval:** {refresh_minutes} Minutes")
+        st.info(f"⏱️ **Döngü Süresi:** {refresh_minutes} Dakika")
     
     if uploaded_file:
         df = pd.read_csv(uploaded_file)
         
+        # Başlat/Durdur
         col1, col2 = st.columns([1, 4])
         with col1:
             if not st.session_state.monitor_active:
-                if st.button("▶️ Start Loop", type="primary"):
+                if st.button("▶️ Başlat", type="primary"):
                     st.session_state.monitor_active = True
                     st.session_state.last_scan_time = None
                     st.rerun()
             else:
-                if st.button("⏹️ Stop Loop", type="secondary"):
+                if st.button("⏹️ Durdur", type="secondary"):
                     st.session_state.monitor_active = False
                     st.rerun()
 
         st.divider()
 
-        # --- MONITOR LOOP ---
+        # --- DÖNGÜ MANTIĞI ---
         if st.session_state.monitor_active:
             now = datetime.now()
             should_scan = False
@@ -238,62 +271,63 @@ if operation_mode == "🔍 Monitor Mode (Watch Only)":
                 if time_diff >= target_wait:
                     should_scan = True
                 else:
-                    # BEKLEME MODU
+                    # === BEKLEME MODU (BUTONLAR AKTİF) ===
                     seconds_left = (target_wait - time_diff).total_seconds()
-                    st.caption(f"⏳ Next cycle in: {int(seconds_left // 60)}m {int(seconds_left % 60)}s")
+                    st.caption(f"⏳ Bir sonraki tarama: {int(seconds_left // 60)}dk {int(seconds_left % 60)}sn")
                     
-                    # Sonuçları göster (Beklerken de tabloyu ve butonları render et)
+                    # Sonuçları göster (show_buttons=True)
                     if st.session_state.latest_results_list:
-                        render_results_table(st.session_state.latest_results_list)
+                        render_results_table(st.session_state.latest_results_list, show_buttons=True)
                     
                     time.sleep(1)
                     st.rerun()
 
-            # --- TARAMA MODU ---
+            # === TARAMA MODU (BUTONLAR KAPALI) ===
             if should_scan:
                 st.session_state.cycle_count += 1
-                st.session_state.latest_results_list = [] # Listeyi sıfırla
                 
-                # İlerleme ve Durum Alanları
+                # Önceki sonuçları koru ama güncellemek için yeni liste başlat
+                # Not: file_manager KORUNUYOR (session state içinde), sadece tablo listesi yenileniyor.
+                temp_results_list = [] 
+                
                 progress_bar = st.progress(0)
-                status_text = st.empty() # "Checking..." yazısı için
-                table_container = st.empty() # Tablo için
+                status_text = st.empty()
+                table_container = st.empty() 
                 
                 driver = get_driver()
                 try:
                     total_items = len(df)
                     
-                    # Tablonun boş iskeletini başlat (opsiyonel, veya döngü içinde doldur)
-                    
                     for index, row in df.iterrows():
                         protein_id = str(row.get("Protein ID", f"Protein_{index}")).strip()
                         url = row["Result Link"]
                         
-                        # 1. "Checking" yazısını güncelle
-                        status_text.markdown(f"### 🔎 Checking ({index+1}/{total_items}): **{protein_id}**...")
+                        # Durum Yazısı
+                        status_text.markdown(f"### 🔎 Kontrol Ediliyor ({index+1}/{total_items}): **{protein_id}**...")
                         progress_bar.progress((index + 1) / total_items)
                         
-                        # 2. Analizi yap
+                        # Analiz Et
                         res = analyze_page_status(driver, url)
                         
-                        # 3. Listeye ekle
-                        st.session_state.latest_results_list.append({
+                        # Listeye Ekle
+                        temp_results_list.append({
                             "Protein ID": protein_id,
                             "Status": res["status"],
                             "Current Stage": res["details"],
-                            "Est. Time": res["est_time"],
                             "Result Link": url
                         })
                         
-                        # 4. TABLOYU ANINDA GÜNCELLE (Her satır eklendiğinde yeniden çizilir)
+                        # TABLOYU GÜNCELLE (show_buttons=False -> Hata vermemesi için önemli!)
                         with table_container.container():
-                            render_results_table(st.session_state.latest_results_list)
+                            render_results_table(temp_results_list, show_buttons=False)
                     
-                    # Döngü bitti
-                    status_text.success(f"✅ Cycle {st.session_state.cycle_count} Complete!")
-                    time.sleep(1) # Kullanıcı "Complete" yazısını görsün
-                    status_text.empty() # Yazıyı kaldır
+                    # Tarama Bitti
+                    status_text.success(f"✅ Döngü {st.session_state.cycle_count} Tamamlandı!")
+                    time.sleep(1)
+                    status_text.empty()
                     
+                    # Sonuçları Kalıcı Listeye Aktar
+                    st.session_state.latest_results_list = temp_results_list
                     st.session_state.last_scan_time = datetime.now()
                     
                 except Exception as e:
@@ -303,12 +337,7 @@ if operation_mode == "🔍 Monitor Mode (Watch Only)":
                     st.rerun()
 
 # ==========================================
-# MODE 2: DOWNLOADER MODE (Aynen korundu)
+# DOWNLOADER MODE (Aynı Kaldı)
 # ==========================================
-elif operation_mode == "⬇️ Downloader Mode (Harvest)":
-    # (Bu kısım önceki kodun aynısıdır, değişiklik yapmaya gerek yok)
-    st.markdown("### 📦 Data Acquisition & Packaging Module")
-    # ... (Downloader kod bloğu buraya gelecek, önceki kodun aynısı) ...
-    # Kodu kısaltmak için burayı tekrar kopyalamadım, Downloader modunu değiştirmedik.
-    # Eğer istersen orayı da eklerim ama monitor modu isteğinle bağımsız.
-    st.info("Switch to Monitor Mode to see the new individual download features.")
+elif operation_mode == "⬇️ Downloader Mode":
+    st.info("Bu mod toplu indirme içindir. Tekli indirmeler ve yönetim için Monitor modunu kullanın.")
