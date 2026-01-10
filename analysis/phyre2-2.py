@@ -137,6 +137,9 @@ if 'cycle_count' not in st.session_state: st.session_state.cycle_count = 0
 # Dosya Yöneticisi: { 'ProteinID': {'data': binary, 'status': 'saved'/'deleted'} }
 if 'file_manager' not in st.session_state: st.session_state.file_manager = {}
 
+# Downloader modu sonuçları için ayrı state
+if 'downloader_results' not in st.session_state: st.session_state.downloader_results = []
+
 # Tamamlanan Görevler Listesi (Tekrar taramamak için)
 if 'completed_ids' not in st.session_state: st.session_state.completed_ids = set()
 
@@ -147,17 +150,20 @@ operation_mode = st.sidebar.radio("Select Protocol:", ("🔍 Monitor Mode", "⬇
 # YENİ ÖZELLİK: Tamamlananları Atla
 skip_completed = st.sidebar.checkbox("✅ Bitenleri Tekrar Tarama", value=True, help="İşaretliyse, daha önce bitmiş olan genleri tekrar kontrol etmez.")
 
+# --- SIDEBAR: RESET CACHE (İsteğin üzerine eklendi) ---
+st.sidebar.markdown("---")
+if st.sidebar.button("🗑️ Önbelleği Temizle (Reset)", help="İndirilmiş (Fetch) olarak işaretlenen tüm kayıtları sıfırlar."):
+    st.session_state.file_manager = {}
+    st.success("Önbellek temizlendi!")
+    time.sleep(1)
+    st.rerun()
+
 st.title("🧬 Phyre2 Smart Manager")
 
 # ==========================================
-# AKILLI TABLO ÇİZİCİ
+# AKILLI TABLO ÇİZİCİ (MONITOR MODU)
 # ==========================================
 def render_results_table(data_list, show_buttons=True):
-    """
-    show_buttons=False -> Tarama sırasında çalışır. Hata vermemesi için butonları gizler.
-    show_buttons=True -> Bekleme modunda çalışır. İndirme butonlarını gösterir.
-    """
-    # Tablo Başlıkları
     h1, h2, h3, h4, h5 = st.columns([2, 1.5, 2, 1, 2.5])
     h1.markdown("**Protein ID**")
     h2.markdown("**Status**")
@@ -174,19 +180,13 @@ def render_results_table(data_list, show_buttons=True):
         c1, c2, c3, c4, c5 = st.columns([2, 1.5, 2, 1, 2.5])
         
         c1.write(pid)
-        
-        # Renkli Durum
         color = "orange" if status == "RUNNING" else "green" if status == "COMPLETE" else "red"
         c2.markdown(f":{color}[{status}]")
-        
         c3.write(item["Current Stage"])
         c4.markdown(f"[🔗 Open]({item['Result Link']})")
         
-        # --- BUTON YÖNETİMİ ---
         if status == "COMPLETE":
             file_record = st.session_state.file_manager.get(pid)
-            
-            # --- DURUM 1: İNDİRİLMİŞ VE KAYITLI ---
             if file_record and file_record['status'] == 'saved':
                 if show_buttons:
                     btn_col1, btn_col2 = c5.columns([1, 1])
@@ -202,13 +202,11 @@ def render_results_table(data_list, show_buttons=True):
                         st.session_state.file_manager[pid]['data'] = None 
                         st.rerun()
                 else:
-                    c5.markdown("💾 *Hazır (Saved)*") # Tarama sırasında sadece yazı
-
-            # --- DURUM 2: SİLİNMİŞ ---
+                    c5.markdown("💾 *Hazır*")
             elif file_record and file_record['status'] == 'deleted':
                 if show_buttons:
                     c5.write("🗑️ *Silindi*")
-                    if c5.button("♻️ Tekrar Çek", key=f"refetch_{safe_pid}"):
+                    if c5.button("♻️ Getir", key=f"refetch_{safe_pid}"):
                         with st.spinner("Getiriliyor..."):
                             success, data = fetch_single_protein_data(item["Result Link"], safe_pid)
                             if success:
@@ -216,20 +214,16 @@ def render_results_table(data_list, show_buttons=True):
                                 st.rerun()
                 else:
                     c5.markdown("🗑️ *Silindi*")
-
-            # --- DURUM 3: HENÜZ İNDİRİLMEMİŞ ---
             else:
                 if show_buttons:
-                    if c5.button("📥 Getir (Fetch)", key=f"fetch_{safe_pid}"):
-                        with st.spinner("Veriler toplanıyor..."):
+                    if c5.button("📥 Getir", key=f"fetch_{safe_pid}"):
+                        with st.spinner("Çekiliyor..."):
                             success, data = fetch_single_protein_data(item["Result Link"], safe_pid)
                             if success:
                                 st.session_state.file_manager[pid] = {'data': data, 'status': 'saved'}
                                 st.rerun()
-                            else:
-                                st.error("Hata.")
                 else:
-                    c5.caption("⏳ Bekliyor...") # Tarama sırasında buton yok
+                    c5.caption("⏳ Bekliyor...")
         else:
             c5.write("-")
 
@@ -261,7 +255,6 @@ if operation_mode == "🔍 Monitor Mode":
 
         st.divider()
 
-        # --- DÖNGÜ MANTIĞI ---
         if st.session_state.monitor_active:
             now = datetime.now()
             should_scan = False
@@ -275,24 +268,16 @@ if operation_mode == "🔍 Monitor Mode":
                 if time_diff >= target_wait:
                     should_scan = True
                 else:
-                    # === BEKLEME MODU (BUTONLAR AKTİF) ===
-                    # Bu aşamada show_buttons=True olduğu için indirme yapabilirsin
                     seconds_left = (target_wait - time_diff).total_seconds()
                     st.caption(f"⏳ Bir sonraki tarama: {int(seconds_left // 60)}dk {int(seconds_left % 60)}sn")
-                    
                     if st.session_state.latest_results_list:
                         render_results_table(st.session_state.latest_results_list, show_buttons=True)
-                    
                     time.sleep(1)
                     st.rerun()
 
-            # === TARAMA MODU (BUTONLAR KAPALI) ===
-            # Bu aşamada show_buttons=False olduğu için HATA VERMEZ
             if should_scan:
                 st.session_state.cycle_count += 1
-                
                 temp_results_list = [] 
-                
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 table_container = st.empty() 
@@ -300,33 +285,24 @@ if operation_mode == "🔍 Monitor Mode":
                 driver = get_driver()
                 try:
                     total_items = len(df)
-                    
                     for index, row in df.iterrows():
                         protein_id = str(row.get("Protein ID", f"Protein_{index}")).strip()
                         url = row["Result Link"]
                         
-                        # --- SKIP LOGIC (ATLAMAA MANTIĞI) ---
                         if skip_completed and protein_id in st.session_state.completed_ids:
-                            # Daha önce bitmişse, siteye gitme, hafızadan yaz
                             temp_results_list.append({
                                 "Protein ID": protein_id,
                                 "Status": "COMPLETE",
                                 "Current Stage": "Hazır (Önbellek)",
                                 "Result Link": url
                             })
-                            # Çok hızlı geçtiği için anlık bilgi ver
-                            status_text.markdown(f"### ⏭️ Atlanıyor ({index+1}/{total_items}): **{protein_id}**")
+                            status_text.markdown(f"### ⏭️ Atlanıyor: **{protein_id}**")
                             time.sleep(0.05) 
-                        
                         else:
-                            # --- NORMAL TARAMA ---
-                            status_text.markdown(f"### 🔎 Kontrol Ediliyor ({index+1}/{total_items}): **{protein_id}**...")
-                            
+                            status_text.markdown(f"### 🔎 Kontrol Ediliyor: **{protein_id}**...")
                             res = analyze_page_status(driver, url)
-                            
                             if res["status"] == "COMPLETE":
                                 st.session_state.completed_ids.add(protein_id)
-                            
                             temp_results_list.append({
                                 "Protein ID": protein_id,
                                 "Status": res["status"],
@@ -335,19 +311,14 @@ if operation_mode == "🔍 Monitor Mode":
                             })
                         
                         progress_bar.progress((index + 1) / total_items)
-
-                        # TABLOYU GÜNCELLE (BUTONLAR KAPALI)
                         with table_container.container():
                             render_results_table(temp_results_list, show_buttons=False)
                     
-                    # Tarama Bitti
                     status_text.success(f"✅ Döngü {st.session_state.cycle_count} Tamamlandı!")
                     time.sleep(1)
                     status_text.empty()
-                    
                     st.session_state.latest_results_list = temp_results_list
                     st.session_state.last_scan_time = datetime.now()
-                    
                 except Exception as e:
                     st.error(f"Scan Error: {e}")
                 finally:
@@ -355,7 +326,99 @@ if operation_mode == "🔍 Monitor Mode":
                     st.rerun()
 
 # ==========================================
-# DOWNLOADER MODE (Toplu İndirme)
+# DOWNLOADER MODE (Toplu İndirme Revize)
 # ==========================================
 elif operation_mode == "⬇️ Downloader Mode":
-    st.info("Bu mod toplu indirme içindir. Tekli yönetim için Monitor modunu kullanın.")
+    st.markdown("### 📥 Toplu İndirme Modu")
+    st.info("Listenizi yükleyin, sistem bir kez tarasın. Bitenleri tek bir ZIP olarak indirin. (Loop Yok)")
+    
+    uploaded_file_dl = st.file_uploader("Upload CSV", type=["csv"], key="dl_csv")
+    
+    if uploaded_file_dl:
+        df_dl = pd.read_csv(uploaded_file_dl)
+        
+        # --- Tarama Başlat Butonu ---
+        if st.button("🚀 Listeyi Tara ve Durumu Gör", type="primary"):
+            st.session_state.downloader_results = [] # Reset
+            
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            driver = get_driver()
+            temp_results = []
+            
+            try:
+                total = len(df_dl)
+                for index, row in df_dl.iterrows():
+                    pid = str(row.get("Protein ID", f"Protein_{index}")).strip()
+                    url = row["Result Link"]
+                    
+                    status_text.text(f"Taranıyor ({index+1}/{total}): {pid}")
+                    res = analyze_page_status(driver, url)
+                    
+                    temp_results.append({
+                        "Protein ID": pid,
+                        "Status": res["status"],
+                        "Result Link": url
+                    })
+                    progress_bar.progress((index + 1) / total)
+                
+                st.session_state.downloader_results = temp_results
+                status_text.success("Tarama Tamamlandı!")
+                
+            except Exception as e:
+                st.error(f"Hata: {e}")
+            finally:
+                driver.quit()
+        
+        # --- Sonuç Tablosu ---
+        if st.session_state.downloader_results:
+            st.markdown("#### 📋 Sonuç Listesi")
+            
+            # Basit Tablo Görünümü
+            results_df = pd.DataFrame(st.session_state.downloader_results)
+            st.dataframe(results_df, use_container_width=True)
+            
+            # --- "Bitenleri ZIP Yap" Butonu Mantığı ---
+            completed_jobs = [x for x in st.session_state.downloader_results if x["Status"] == "COMPLETE"]
+            count_complete = len(completed_jobs)
+            
+            if count_complete > 0:
+                st.divider()
+                st.success(f"🎉 **{count_complete}** adet tamamlanmış iş bulundu.")
+                
+                # Burada State kullanarak indirme işlemini tetikliyoruz
+                # Çünkü 'Fetch' işlemi uzun sürer, kullanıcı butona basınca yapalım.
+                if st.button(f"📦 Bitenlerin Hepsini Paketle ve İndir ({count_complete} Dosya)", type="primary"):
+                    
+                    master_zip_buffer = io.BytesIO()
+                    
+                    with st.spinner("Dosyalar Phyre2 sunucusundan çekiliyor ve paketleniyor... Bu işlem biraz sürebilir."):
+                        with zipfile.ZipFile(master_zip_buffer, "w", zipfile.ZIP_DEFLATED) as master_zip:
+                            
+                            # Tek tek indirip Master Zip'e ekle
+                            # (Selenium her seferinde açılıp kapanacak, bu işlem biraz yavaş olabilir ama stabil)
+                            progress_dl = st.progress(0)
+                            
+                            for idx, job in enumerate(completed_jobs):
+                                pid = job["Protein ID"]
+                                url = job["Result Link"]
+                                safe_pid = pid.replace(" ", "_")
+                                
+                                success, zip_data = fetch_single_protein_data(url, safe_pid)
+                                
+                                if success:
+                                    # Master Zip içine, "ProteinID_result.zip" olarak ekle
+                                    master_zip.writestr(f"{safe_pid}_result.zip", zip_data)
+                                
+                                progress_dl.progress((idx + 1) / count_complete)
+                        
+                        st.balloons()
+                        st.download_button(
+                            label="💾 ZIP Dosyasını İndir",
+                            data=master_zip_buffer.getvalue(),
+                            file_name="Phyre2_Toplu_Sonuclar.zip",
+                            mime="application/zip"
+                        )
+            else:
+                st.warning("Henüz tamamlanmış (COMPLETE) bir iş yok.")
