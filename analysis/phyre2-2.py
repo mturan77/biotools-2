@@ -143,22 +143,23 @@ def analyze_page_status(driver, url):
     except Exception as e:
         return {"status": "ERROR", "details": str(e), "est_time": "-", "is_complete": False}
 
-# --- JS SCROLL HELPER (GÜÇLENDİRİLMİŞ RETRY LOGIC) ---
-def scroll_to_table():
+# --- YENİ SCROLL KORUMA SİSTEMİ ---
+def inject_scroll_saver():
+    # Bu script 2 şey yapar:
+    # 1. Sayfa yüklendiğinde hafızadaki (sessionStorage) konuma gider.
+    # 2. Kullanıcı scroll yaptıkça yeni konumu hafızaya yazar.
     js = """
     <script>
-        function attemptScroll(count) {
-            var element = window.parent.document.getElementById("monitor_anchor");
-            if (element) {
-                // Element bulundu, hafif yukarı ofset ile kaydır
-                element.scrollIntoView({behavior: "smooth", block: "start"});
-            } else if (count > 0) {
-                // Bulamazsa 100ms bekle tekrar dene (toplam 15 deneme)
-                setTimeout(function() { attemptScroll(count - 1); }, 100);
-            }
+        // 1. Kayıtlı konumu geri yükle
+        var storedScroll = sessionStorage.getItem("phyre2_scroll_pos");
+        if (storedScroll) {
+            window.parent.scrollTo(0, parseInt(storedScroll));
         }
-        // Sayfa yüklendikten sonra aramaya başla
-        attemptScroll(15);
+
+        // 2. Scroll hareketini dinle ve kaydet
+        window.parent.addEventListener("scroll", function() {
+            sessionStorage.setItem("phyre2_scroll_pos", window.parent.scrollY);
+        });
     </script>
     """
     st.components.v1.html(js, height=0)
@@ -294,6 +295,9 @@ if operation_mode == "🔍 Monitor Mode":
 
         # Monitor Logic
         if st.session_state.monitor_active:
+            # --- SCROLL KONUMUNU KORU ---
+            inject_scroll_saver()
+            
             now = datetime.now()
             should_scan = False
             
@@ -309,17 +313,11 @@ if operation_mode == "🔍 Monitor Mode":
                     # BEKLEME MODU
                     seconds_left = (target_wait - time_diff).total_seconds()
                     
-                    # --- ÇAPA NOKTASI ---
-                    # Tam olarak sayacin ustune, hafif yukari kaydirarak konumlandiriyoruz.
-                    st.markdown('<div id="monitor_anchor" style="position: relative; top: -50px; visibility: hidden;"></div>', unsafe_allow_html=True)
-                    
                     t1, t2 = st.columns([3,1])
                     t1.caption(f"⏳ Bir sonraki tarama: {int(seconds_left // 60)}dk {int(seconds_left % 60)}sn")
                     
                     if st.session_state.latest_results_list:
                         render_results_table(st.session_state.latest_results_list, show_buttons=True)
-                        # Tablo cizildikten sonra scroll fonksiyonunu cagiriyoruz
-                        scroll_to_table()
                     
                     time.sleep(1)
                     st.rerun()
@@ -327,9 +325,6 @@ if operation_mode == "🔍 Monitor Mode":
             if should_scan:
                 st.session_state.cycle_count += 1
                 temp_results_list = [] 
-                
-                # Tarama baslarken de anchor koyalim ki yukari kaysin
-                st.markdown('<div id="monitor_anchor" style="position: relative; top: -50px; visibility: hidden;"></div>', unsafe_allow_html=True)
                 
                 progress_bar = st.progress(0)
                 status_text = st.empty()
@@ -370,10 +365,14 @@ if operation_mode == "🔍 Monitor Mode":
                         progress_bar.progress((index + 1) / total_items)
                         with table_container.container():
                             render_results_table(temp_results_list, show_buttons=False)
-                            # Her adimda scroll'u tazeleyelim
-                            scroll_to_table()
+                            # İşlem sırasında da konumu korumak için tekrar çağırılabilir
+                            inject_scroll_saver()
                     
                     status_text.success(f"✅ Döngü {st.session_state.cycle_count} Tamamlandı!")
+                    
+                    # --- TOAST BİLDİRİMİ ---
+                    st.toast(f"Döngü Tamamlandı! Tablo Güncellendi.", icon="🔄")
+                    
                     time.sleep(1)
                     status_text.empty()
                     st.session_state.latest_results_list = temp_results_list
