@@ -9,8 +9,8 @@ import os
 import json
 import uuid
 
-# Sayfa Ayarları
-st.set_page_config(page_title="Phyre2 Pro Suite", page_icon="🧬", layout="wide")
+# --- SAYFA AYARLARI ---
+st.set_page_config(page_title="Phyre2 Pro Suite v2", page_icon="🧬", layout="wide")
 
 # --- CSS ---
 st.markdown("""
@@ -25,9 +25,20 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- AYARLAR ---
+# --- GLOBAL DEĞİŞKENLER ---
 HISTORY_FILE = "phyre_sessions.json"
 MAX_HISTORY = 10
+
+# --- SESSION STATE BAŞLATMA ---
+# Verilerin silinmemesi için burası çok önemli
+if 'results_data' not in st.session_state:
+    st.session_state.results_data = []
+if 'analysis_complete' not in st.session_state:
+    st.session_state.analysis_complete = False
+if 'current_session_id' not in st.session_state:
+    st.session_state.current_session_id = None
+if 'uploader_key' not in st.session_state:
+    st.session_state.uploader_key = 0
 
 # --- GEÇMİŞ YÖNETİMİ ---
 def load_history():
@@ -40,12 +51,9 @@ def load_history():
     else:
         return []
 
-# --- KRİTİK GÜNCELLEME: UPDATE SESSION ---
-# Bu fonksiyon her adımda çağrılır. Varsa günceller, yoksa yaratır.
 def update_session_in_history(session_id, filename, results_list):
     history = load_history()
     
-    # Şu anki veriyi hazırla
     current_session_data = {
         "id": session_id,
         "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -54,7 +62,7 @@ def update_session_in_history(session_id, filename, results_list):
         "data": results_list
     }
     
-    # Listede bu ID var mı diye bak
+    # ID varsa güncelle, yoksa ekle
     found_index = -1
     for i, item in enumerate(history):
         if item["id"] == session_id:
@@ -62,19 +70,20 @@ def update_session_in_history(session_id, filename, results_list):
             break
     
     if found_index != -1:
-        # Varsa GÜNCELLE (Eskisini silip yenisini koy)
         history[found_index] = current_session_data
     else:
-        # Yoksa EN BAŞA EKLE
         history.insert(0, current_session_data)
     
-    # Sınırı koru
     if len(history) > MAX_HISTORY:
         history = history[:MAX_HISTORY]
         
-    # Diske yaz (Autosave)
-    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(history, f, ensure_ascii=False, indent=4)
+    try:
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(history, f, ensure_ascii=False, indent=4)
+            f.flush() # Diske yazmayı zorla
+            os.fsync(f.fileno()) # İşletim sistemi seviyesinde yazmayı zorla
+    except Exception as e:
+        st.error(f"History save error: {e}")
 
 def delete_session(session_id):
     history = load_history()
@@ -87,15 +96,16 @@ def clear_all_history():
         os.remove(HISTORY_FILE)
 
 # --- SIFIRLAMA ---
-if 'uploader_key' not in st.session_state:
-    st.session_state.uploader_key = 0
-
 def reset_app():
     st.session_state.uploader_key += 1
+    st.session_state.results_data = []
+    st.session_state.analysis_complete = False
+    st.session_state.current_session_id = None
+    st.rerun()
 
 # --- BAŞLIK ---
-st.title("🧬 Phyre2 Protein Modelling Automation")
-st.markdown("Automated tool with **Real-time Autosave**. Data is saved after every sequence.")
+st.title("🧬 Phyre2 Protein Modelling Automation (Fix v2)")
+st.markdown("Automated tool with **Persistent State**. Data is safe during download.")
 st.divider()
 
 # --- SIDEBAR ---
@@ -104,7 +114,6 @@ with st.sidebar:
     st.markdown("---")
     
     st.subheader("📂 Analysis Sessions")
-    
     history_data = load_history()
     
     if history_data:
@@ -113,23 +122,11 @@ with st.sidebar:
             st.rerun()
             
         st.markdown("---")
-        
         for session in history_data:
-            # Başlıkta tamamlanan sayı yazar
             expander_title = f"📅 {session['date']} | 📄 {session['filename']} ({session['count']})"
-            
             with st.expander(expander_title):
                 df_session = pd.DataFrame(session['data'])
-                st.dataframe(
-                    df_session,
-                    column_config={
-                        "Result Link": st.column_config.LinkColumn("Result", display_text="Open"),
-                        "Job ID": st.column_config.TextColumn("ID", width="small"),
-                        "Status": st.column_config.TextColumn("Stat", width="small"),
-                    },
-                    hide_index=True,
-                    use_container_width=True
-                )
+                st.dataframe(df_session, hide_index=True)
                 
                 csv_session = df_session.to_csv(index=False).encode('utf-8')
                 st.download_button("💾 CSV", csv_session, f"{session['filename']}.csv", "text/csv", key=f"dl_{session['id']}")
@@ -142,7 +139,7 @@ with st.sidebar:
 
     st.markdown("---")
     st.subheader("Configuration")
-    email = st.text_input("E-mail Address", value="", placeholder="ornek@gmail.com")
+    email = st.text_input("E-mail Address", value="", placeholder="Enter email to enable start")
     mode = st.selectbox("Modelling Mode", ["normal", "intensive"])
     user_type = st.radio("User Type", ["Academic", "Commercial"], index=0)
     bekleme_suresi = st.number_input("Delay (sec)", 0.5, 30.0, 2.0, 0.1)
@@ -157,108 +154,149 @@ with col1:
         key=f"uploader_{st.session_state.uploader_key}" 
     )
 
-if uploaded_file and email:
-    stringio = StringIO(uploaded_file.getvalue().decode("utf-8"))
-    content = stringio.read()
-    raw_entries = [x for x in content.split('>') if x.strip()]
-    
-    with col2:
-        st.info(f"**Status:** Ready\n\n**Total Sequences:** {len(raw_entries)}")
-        start_btn = st.button("🚀 Start Analysis", type="primary")
-    
-    if start_btn:
-        progress_bar = st.progress(0)
-        status_text = st.empty()
+if uploaded_file:
+    if not email:
+        with col2:
+            st.warning("⚠️ Lütfen analizi başlatmak için E-mail adresi giriniz.")
+    else:
+        stringio = StringIO(uploaded_file.getvalue().decode("utf-8"))
+        content = stringio.read()
+        raw_entries = [x for x in content.split('>') if x.strip()]
         
-        st.subheader("Current Analysis Log")
-        result_placeholder = st.empty()
-        current_results = [] 
-        
-        # --- SESSION ID OLUŞTUR ---
-        # Analiz başlarken benzersiz bir ID oluşturuyoruz
-        current_session_id = str(uuid.uuid4())
+        with col2:
+            st.info(f"**Status:** Ready\n\n**Total Sequences:** {len(raw_entries)}")
+            
+            # Butona basılınca bir flag (bayrak) kaldırıyoruz, işlemi aşağıda yapıyoruz
+            if not st.session_state.analysis_complete:
+                start_btn = st.button("🚀 Start Analysis", type="primary")
+            else:
+                start_btn = False
+                st.success("✅ Analysis Completed!")
 
-        for i, entry in enumerate(raw_entries):
-            lines = entry.strip().split('\n')
-            header = lines[0].strip()
-            sequence = "".join(lines[1:]).replace(" ", "") 
+        # --- ANALİZ MANTIĞI ---
+        if start_btn:
+            # Önceki verileri temizle
+            st.session_state.results_data = []
+            st.session_state.analysis_complete = False
             
-            status_text.caption(f"Processing ({i+1}/{len(raw_entries)}): {header}...")
-            progress_bar.progress((i + 1) / len(raw_entries))
+            # Session ID'yi burada sabitliyoruz
+            st.session_state.current_session_id = str(uuid.uuid4())
             
-            url = "http://www.sbg.bio.ic.ac.uk/phyre2/webscripts/phyre2_submit.cgi"
-            headers_http = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Referer': 'http://www.sbg.bio.ic.ac.uk/phyre2/html/page.cgi?id=index'
-            }
-            payload = {
-                'usr-email': email, 'seq-desc': header, 'sequence': sequence,    
-                'modelmode': mode, 'private': 'no', 
-                'type': 'academic' if 'Academic' in user_type else 'commercial' 
-            }
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            result_placeholder = st.empty()
             
-            status_code = "Pending"
-            result_link = ""
-            current_job_id = "-"
-            
-            try:
-                response = requests.post(url, data=payload, headers=headers_http, timeout=45)
-                resp_text_lower = response.text.lower()
-                success_keywords = ["submitted", "success", "job id", "queue"]
+            for i, entry in enumerate(raw_entries):
+                lines = entry.strip().split('\n')
+                header = lines[0].strip()
+                sequence = "".join(lines[1:]).replace(" ", "") 
                 
-                if response.status_code == 200 and any(x in resp_text_lower for x in success_keywords):
-                    job_match = re.search(r"jobid=([a-zA-Z0-9]+)", response.text)
-                    if job_match:
-                        job_id = job_match.group(1)
-                        current_job_id = job_id
-                        monitor_link = f"http://www.sbg.bio.ic.ac.uk/phyre2/webscripts/jobmonitor-harry.cgi?jobid={job_id}"
-                        status_code = "Completed"
-                        result_link = monitor_link
+                status_text.caption(f"Processing ({i+1}/{len(raw_entries)}): {header}...")
+                progress_bar.progress((i + 1) / len(raw_entries))
+                
+                # --- API İSTEĞİ ---
+                url = "http://www.sbg.bio.ic.ac.uk/phyre2/webscripts/phyre2_submit.cgi"
+                headers_http = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Referer': 'http://www.sbg.bio.ic.ac.uk/phyre2/html/page.cgi?id=index'
+                }
+                payload = {
+                    'usr-email': email, 'seq-desc': header, 'sequence': sequence,     
+                    'modelmode': mode, 'private': 'no', 
+                    'type': 'academic' if 'Academic' in user_type else 'commercial' 
+                }
+                
+                status_code = "Pending"
+                result_link = ""
+                current_job_id = "-"
+                
+                try:
+                    response = requests.post(url, data=payload, headers=headers_http, timeout=45)
+                    resp_text_lower = response.text.lower()
+                    success_keywords = ["submitted", "success", "job id", "queue"]
+                    
+                    if response.status_code == 200 and any(x in resp_text_lower for x in success_keywords):
+                        job_match = re.search(r"jobid=([a-zA-Z0-9]+)", response.text)
+                        if job_match:
+                            job_id = job_match.group(1)
+                            current_job_id = job_id
+                            monitor_link = f"http://www.sbg.bio.ic.ac.uk/phyre2/webscripts/jobmonitor-harry.cgi?jobid={job_id}"
+                            status_code = "Completed"
+                            result_link = monitor_link
+                        else:
+                            status_code = "Submitted (No Link)"
                     else:
-                        status_code = "Submitted (No Link)"
-                else:
-                    status_code = "Failed"
-            except Exception as e:
-                status_code = "Connection Error"
-            
-            # Sonucu listeye ekle
-            current_results.append({
-                "Protein ID": header,
-                "Job ID": current_job_id,
-                "Status": status_code,
-                "Result Link": result_link
-            })
-            
-            # --- KRİTİK NOKTA: AUTOSAVE ---
-            # Her bir protein bittiğinde dosyayı güncelliyoruz!
-            update_session_in_history(current_session_id, uploaded_file.name, current_results)
-            
-            # Canlı tabloyu güncelle
-            df_live = pd.DataFrame(current_results)
-            with result_placeholder.container():
-                st.dataframe(
-                    df_live,
-                    column_config={
-                        "Result Link": st.column_config.LinkColumn("Access", display_text="View"),
-                        "Status": st.column_config.TextColumn("Status"),
-                        "Job ID": st.column_config.TextColumn("Job ID", width="medium"),
-                    },
-                    hide_index=True,
-                    use_container_width=True
+                        status_code = "Failed"
+                except Exception as e:
+                    status_code = "Connection Error"
+                
+                # --- SONUCU SESSION STATE'E EKLE ---
+                st.session_state.results_data.append({
+                    "Protein ID": header,
+                    "Job ID": current_job_id,
+                    "Status": status_code,
+                    "Result Link": result_link
+                })
+                
+                # --- AUTOSAVE ---
+                update_session_in_history(
+                    st.session_state.current_session_id, 
+                    uploaded_file.name, 
+                    st.session_state.results_data
                 )
+                
+                # --- TABLOYU GÜNCELLE ---
+                df_live = pd.DataFrame(st.session_state.results_data)
+                with result_placeholder.container():
+                    st.dataframe(
+                        df_live,
+                        column_config={
+                            "Result Link": st.column_config.LinkColumn("Access", display_text="View"),
+                        },
+                        hide_index=True,
+                        use_container_width=True
+                    )
 
-            time.sleep(bekleme_suresi)
+                time.sleep(bekleme_suresi)
             
-        progress_bar.empty()
-        status_text.success("Analysis Batch Completed.")
-        
-        # Son yedekleme
-        st.toast("All data saved to history!", icon="💾")
-        
-        if current_results:
-            df_final = pd.DataFrame(current_results)
-            csv_final = df_final.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Download Batch Report (CSV)", csv_final, 'batch_report.csv', 'text/csv', type="primary")
+            # Döngü bitti
+            progress_bar.empty()
+            status_text.success("Analysis Batch Completed.")
+            st.session_state.analysis_complete = True
+            st.rerun() # Sayfayı yenile ki butonlar aktifleşsin
 
-elif not email and uploaded_file:
-    st.warning("Please enter your e-mail address to proceed.")
+# --- SONUÇLARI GÖSTERME VE İNDİRME ALANI ---
+# Burası "if start_btn" bloğunun DIŞINDA olduğu için sayfa yenilense de çalışır
+if st.session_state.results_data:
+    st.subheader("📊 Analysis Results")
+    
+    df_final = pd.DataFrame(st.session_state.results_data)
+    
+    # Tabloyu göster
+    st.dataframe(
+        df_final,
+        column_config={
+            "Result Link": st.column_config.LinkColumn("Access", display_text="View"),
+            "Status": st.column_config.TextColumn("Status"),
+            "Job ID": st.column_config.TextColumn("Job ID", width="medium"),
+        },
+        hide_index=True,
+        use_container_width=True
+    )
+    
+    # --- GÜVENLİ İNDİRME ---
+    col_d1, col_d2 = st.columns([1, 4])
+    with col_d1:
+        csv_final = df_final.to_csv(index=False).encode('utf-8')
+        
+        # Dosya adını dinamik yapalım
+        file_name_clean = uploaded_file.name.split('.')[0] if uploaded_file else "results"
+        timestamp = datetime.now().strftime("%H%M")
+        
+        st.download_button(
+            label="📥 Download CSV",
+            data=csv_final,
+            file_name=f'{file_name_clean}_{timestamp}_results.csv',
+            mime='text/csv',
+            type="primary"
+        )
