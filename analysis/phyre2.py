@@ -10,7 +10,7 @@ import json
 import uuid
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="Phyre2 Pro Suite v3", page_icon="🧬", layout="wide")
+st.set_page_config(page_title="Phyre2 Pro Suite", page_icon="🧬", layout="wide")
 
 # --- CSS ---
 st.markdown("""
@@ -104,7 +104,7 @@ def perform_reset():
     st.session_state.active_filename = "results"
 
 # --- BAŞLIK ---
-st.title("🧬 Phyre2 Protein Modelling Automation (Fix v3)")
+st.title("🧬 Phyre2 Protein Modelling Automation")
 st.markdown("Automated tool with **Persistent State**. Data is safe during download.")
 st.divider()
 
