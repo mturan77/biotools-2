@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import time
 import datetime
-import os
 import re
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -12,10 +11,9 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from webdriver_manager.core.os_manager import ChromeType
-from bs4 import BeautifulSoup
 
-st.set_page_config(page_title="SMART Ultimate Live", layout="wide")
-st.title("🔴 SMART: Canlı Yayın + JavaScript Tablo Bekleme")
+st.set_page_config(page_title="SMART Live DOM", layout="wide")
+st.title("🔴 SMART: Canlı DOM Okuyucu (JavaScript Uyumlu)")
 
 TEST_SEQUENCE = "MKLKGNMNTSAQNQSQSQPPRKTNEHIQVYVRVRPLNRREKCIHSTEIVEVVSHKEIVARHSLESKLTKKFTFDRTFGPESKQVDVYAAVVGPLIEEVLSGYNCTVFAYGQTGTGKTHTMVGNECAELKSSWEDDSDIGIIPRALCHLFDELRMMELEFSMRISYLELYNEELFDLLSTDDSTKIRIFDDSTKKGSVIIQGLEEIPVHSKDDVYKLLEKGKERRRTASTLMNAQSSRSHTVFSIVVHIKENGIDGEEMLKIGKLNLVDLAGSENVSKAGNEKGVRVRETVNINQSLLTLGRVITALVERTPHIPYRESKLTRLLQESLGGRTKTSIIATISPGHKDIEETLSTLEYAHRAKNIQNKPEVNQKLTKKTVLKEYTEEIDKLKRDLMAARDKNGVYLATETYNEMTLKMDSQTRELNEKVHLLKALKDELASKEKIFNEVSLNLIEKTAELQQKDNRLRSTKGELIETKKVLKNTKRRYKEKKVLLESHAKTEEVLKDQATQILEVADIATKDTEALHETIDRRKDVDVKIQTACERFTERMNENFDQMDETLKQYEGKQISLTRCMDEELTKTSSVQSKLIDATSEQIKSIKQILDSYETSMSSMTENLCSTLTNTGQQQNTSIINFLKQLKEKELQFKTQIKENLEAIECTNEQQQIALSGMRDSIKEKLEESNTKLQQHTKRIQTEMDAIKQKTLENSQELQKISTNLTEQRTLVEEEQKLLEDFQNKMQELHKKHTACSNNINTNVETLEKAQQFVTTQLEGSSKLQQVFLEKNAKALENNCLLVDKLRDQIELHIDQNVAKCSTLTIQLDNKVQETSKALESQIVIADQHYTQTTETLKVYGPQVKRICSERREQHNGKTDLILNSLQNHVKQTVENVSIIKGFNCSLQQKLKDYSKVYKEQMQSCAQDVEIFRKSEIKTYTATGATPSKKDFKYPRVLAATSPHSNIVKRFRQENDWSDLDMTIPLDEESETDIENSISDTETILNSTPVETEIVPPKRNSYVTQRKSDRNSNLLKVPPQSNSRSGSPAGSISPRKGSSRTNSPAYLKQNKENITT"
 
@@ -35,160 +33,137 @@ def get_driver():
         st.error(f"Driver hatası: {e}")
         return None
 
-def update_monitor(log_box, img_box, message, driver, img_suffix):
-    """Canlı log ve görüntü güncelleme"""
+def update_monitor(log_box, img_box, message, driver, suffix):
     now = datetime.datetime.now().strftime("%H:%M:%S")
     log_box.markdown(f"`[{now}]` {message}")
     if driver:
-        fname = f"live_{img_suffix}_{int(time.time())}.png"
+        fname = f"monitor_{suffix}_{int(time.time())}.png"
         driver.save_screenshot(fname)
         img_box.image(fname, caption=f"Bot Gözü: {message}", use_container_width=True)
-
-def extract_number(text):
-    match = re.search(r'\d+', text)
-    return int(match.group()) if match else None
 
 if st.button("🔴 CANLI ANALİZİ BAŞLAT"):
     driver = get_driver()
     if driver:
-        # EKRANI İKİYE BÖL (İstediğin Gibi)
         col1, col2 = st.columns([1, 1])
         with col1:
-            st.subheader("📜 Sistem Logları")
+            st.subheader("📜 Loglar")
             log_box = st.empty()
         with col2:
-            st.subheader("👀 Bot Gözünden")
+            st.subheader("👀 Ekran")
             img_box = st.empty()
 
-        # --- 1. GİRİŞ ---
-        update_monitor(log_box, img_box, "Siteye bağlanılıyor...", driver, "init")
+        # 1. GİRİŞ
+        update_monitor(log_box, img_box, "Siteye gidiliyor...", driver, "init")
         driver.get("https://smart.embl-heidelberg.de/")
         
-        # --- 2. MOD SEÇİMİ ---
+        # 2. MOD
         try:
             driver.implicitly_wait(2)
             links = driver.find_elements(By.CSS_SELECTOR, "a[href*='change_mode.cgi?mode=normal']")
-            if links:
-                update_monitor(log_box, img_box, "Mod seçimi yapılıyor...", driver, "mode_select")
+            if links: 
                 driver.execute_script("arguments[0].click();", links[0])
                 time.sleep(2)
         except: pass
         
-        # --- 3. FORM DOLDURMA ---
+        # 3. FORM
         try:
-            # Pfam
             try: pfam = driver.find_element(By.NAME, "DO_PFAM")
             except: pfam = driver.find_element(By.XPATH, "//input[contains(@name, 'PFAM')]")
             if not pfam.is_selected(): driver.execute_script("arguments[0].click();", pfam)
             
-            # Sekans
             seq_box = driver.find_element(By.NAME, "SEQUENCE")
             seq_box.clear()
             seq_box.send_keys(TEST_SEQUENCE)
             
-            update_monitor(log_box, img_box, "Form dolduruldu. ZORLA GÖNDERİLİYOR...", driver, "form_ready")
-            
-            # FORCE SUBMIT
+            # SUBMIT
             driver.execute_script("arguments[0].form.submit();", seq_box)
+            update_monitor(log_box, img_box, "Form gönderildi...", driver, "sent")
             
         except Exception as e:
-            st.error(f"Form hatası: {e}")
+            st.error(f"Hata: {e}")
             driver.quit()
             st.stop()
 
-        # --- 4. BEKLEME ve TABLO YAKALAMA (YENİ MANTIK) ---
+        # 4. TABLO BEKLEME (KRİTİK BÖLÜM)
         start_time = time.time()
-        results_found = False
+        table_ready = False
         
         while time.time() - start_time < 90:
             elapsed = int(time.time() - start_time)
             
-            # Her 5 saniyede bir güncelleme
-            if elapsed % 4 == 0:
-                update_monitor(log_box, img_box, f"⏳ Sonuç bekleniyor ({elapsed}sn)...", driver, f"waiting_{elapsed}")
-
-            page_src = driver.page_source
-            
-            # Sayfa yüklendi mi?
-            if "Confidently predicted domains" in page_src:
-                update_monitor(log_box, img_box, "✅ Başlık görüldü! Tablo verilerinin yüklenmesi bekleniyor (JS)...", driver, "header_seen")
-                
-                # İŞTE ÇÖZÜM: Tablonun içi (tr) dolana kadar bekle!
+            if "Confidently predicted domains" in driver.page_source:
+                # Tablo başlığı geldi ama satırlar (tbody tr) geldi mi?
+                # Canlı DOM kontrolü yapıyoruz:
                 try:
-                    # 'Start' içeren tablonun içindeki satırları (tr) bekle
-                    WebDriverWait(driver, 15).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, "table.dataTable tbody tr"))
-                    )
-                    # Boş olmayan bir satır görene kadar bekle
-                    time.sleep(2) 
-                    update_monitor(log_box, img_box, "✅ Tablo satırları yüklendi! Veri çekiliyor...", driver, "table_loaded")
-                    results_found = True
-                    break
+                    # DataTables genellikle "odd" veya "even" class'lı satırlar ekler
+                    # CSS Selector ile tablonun BODY kısmındaki satırları arıyoruz
+                    rows = driver.find_elements(By.CSS_SELECTOR, "table.dataTable tbody tr")
+                    
+                    if len(rows) > 0:
+                        # Boş bir satır olup olmadığını kontrol edelim ("No data available" yazabilir)
+                        first_row_text = rows[0].text
+                        if "No data available" not in first_row_text and len(first_row_text.strip()) > 0:
+                            update_monitor(log_box, img_box, f"✅ Tablo DOLU! ({len(rows)} satır tespit edildi)", driver, "table_filled")
+                            table_ready = True
+                            break
+                        else:
+                            if elapsed % 2 == 0: update_monitor(log_box, img_box, "⏳ Tablo boş, JS yüklemesi bekleniyor...", driver, "waiting_js")
+                    else:
+                        if elapsed % 2 == 0: update_monitor(log_box, img_box, "⏳ Tablo iskeleti var, satırlar bekleniyor...", driver, "waiting_rows")
                 except:
-                    update_monitor(log_box, img_box, "⚠️ Tablo başlığı var ama satırlar yüklenmedi (Timeout).", driver, "table_timeout")
-                    # Yine de devam edip ne var ne yok bakalım
-                    results_found = True 
-                    break
-            
-            if "No domains found" in page_src:
-                update_monitor(log_box, img_box, "⚠️ Sonuç: Domain bulunamadı.", driver, "no_domains")
-                results_found = True
-                break
+                    pass
+            else:
+                 if elapsed % 5 == 0: update_monitor(log_box, img_box, f"⏳ Sonuç sayfası bekleniyor ({elapsed}sn)...", driver, "waiting_page")
             
             time.sleep(1)
 
-        # --- 5. VERİ ÇEKME ---
-        if results_found:
-            soup = BeautifulSoup(driver.page_source, 'html.parser')
-            tables = soup.find_all("table")
-            target_table = None
+        # 5. VERİ OKUMA (SELENIUM İLE)
+        if table_ready:
+            data = []
+            # Canlı elementleri tekrar bul
+            rows = driver.find_elements(By.CSS_SELECTOR, "table.dataTable tbody tr")
             
-            # Tabloyu bul
-            for tbl in tables:
-                headers = [th.get_text(strip=True) for th in tbl.find_all("th")]
-                if "Start" in headers and "End" in headers:
-                    target_table = tbl
-                    break
-            
-            if target_table:
-                data = []
-                # tbody kontrolü
-                tbody = target_table.find("tbody")
-                if tbody:
-                    rows = tbody.find_all("tr")
-                else:
-                    rows = target_table.find_all("tr")[1:] # tbody yoksa direk tr'leri al
+            for row in rows:
+                # Her satırın içindeki hücreleri (td) bul
+                cols = row.find_elements(By.TAG_NAME, "td")
                 
-                log_box.info(f"Tabloda {len(rows)} satır veri bulundu.")
-                
-                for row in rows:
-                    cols = row.find_all("td")
-                    col_texts = [td.get_text(strip=True) for td in cols]
+                if len(cols) >= 3:
+                    # İsim (KISc gibi) genellikle ilk hücrededir.
+                    # Senin resmine göre: <td> <div> <a ...>KISc</a> </div> </td>
+                    # .text özelliği gizli olmayan tüm yazıları getirir.
+                    feature_text = cols[0].text.strip()
                     
-                    if len(cols) >= 3:
-                        f_name = col_texts[0]
-                        start_val = extract_number(col_texts[1])
-                        end_val = extract_number(col_texts[2])
-                        
-                        if start_val is not None:
-                            e_val = col_texts[3] if len(cols) > 3 else "-"
-                            data.append({
-                                "Feature": f_name,
-                                "Start": start_val,
-                                "End": end_val,
-                                "E-value": e_val
-                            })
+                    # Eğer boşsa veya alt satırlara inmemiz gerekirse
+                    if not feature_text:
+                        try:
+                            feature_text = cols[0].find_element(By.TAG_NAME, "a").text
+                        except: pass
+                    
+                    start_text = cols[1].text.strip()
+                    end_text = cols[2].text.strip()
+                    e_value = cols[3].text.strip() if len(cols) > 3 else "-"
+                    
+                    # Sadece sayısal başlangıç değeri olanları al (Gereksiz başlıkları ele)
+                    if start_text.isdigit():
+                        data.append({
+                            "Feature": feature_text,
+                            "Start": int(start_text),
+                            "End": int(end_text),
+                            "E-value": e_value
+                        })
+            
+            if data:
+                df = pd.DataFrame(data)
+                st.success(f"🎉 {len(data)} Domain Başarıyla Çekildi!")
+                st.dataframe(df, use_container_width=True)
                 
-                if data:
-                    df = pd.DataFrame(data)
-                    st.success(f"🎉 {len(data)} Domain Bulundu!")
-                    st.dataframe(df, use_container_width=True)
-                else:
-                    st.warning("Tablo var ama satırlardan veri çıkarılamadı.")
-                    st.code(target_table.prettify()) # HTML'i göster
+                # İndirme Butonu
+                csv = df.to_csv(index=False).encode('utf-8')
+                st.download_button("CSV İndir", csv, "smart_results.csv", "text/csv")
             else:
-                st.error("Tablo yapısı eşleşmedi.")
+                st.warning("Tablo satırları bulundu ama metin okunamadı.")
+                st.write("İlk satırın ham metni:", rows[0].get_attribute("innerHTML"))
         else:
-            st.error("Zaman aşımı.")
-        
+            st.error("Zaman aşımı veya tablo yüklenemedi.")
+
         driver.quit()
