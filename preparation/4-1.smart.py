@@ -8,8 +8,8 @@ from selenium.webdriver.common.by import By
 from webdriver_manager.chrome import ChromeDriverManager
 from webdriver_manager.core.os_manager import ChromeType
 
-st.set_page_config(page_title="SMART Form Doldurucu", layout="wide")
-st.title("📝 SMART: Form Doldurma Testi")
+st.set_page_config(page_title="SMART Form Testi v2", layout="wide")
+st.title("📝 SMART: Form Doldurma Testi (Pfam Düzeltilmiş)")
 
 def get_driver():
     chrome_options = Options()
@@ -29,7 +29,7 @@ def get_driver():
         st.error(f"Driver hatası: {e}")
         return None
 
-if st.button("Form Testini Başlat"):
+if st.button("Form Testini Başlat (v2)"):
     driver = get_driver()
     if driver:
         log_col, img_col = st.columns([1, 1])
@@ -39,70 +39,82 @@ if st.button("Form Testini Başlat"):
             driver.get("https://smart.embl-heidelberg.de/")
             time.sleep(2)
             
-            # --- ADIM 1: MOD KONTROLÜ (Gerekirse Yap) ---
+            # --- ADIM 1: MOD KONTROLÜ ---
             try:
-                # Mod seçimi butonu sayfada var mı? (Kısa timeout ile kontrol)
                 driver.implicitly_wait(3) 
-                normal_mode_links = driver.find_elements(By.CSS_SELECTOR, "a[href='change_mode.cgi?mode=normal']")
+                # CSS Selector ile daha kesin hedefleme
+                normal_mode_links = driver.find_elements(By.CSS_SELECTOR, "a[href*='change_mode.cgi?mode=normal']")
                 
                 if normal_mode_links:
                     st.warning("⚠️ Mod seçimi ekranı tespit edildi. 'Normal Mode' seçiliyor...")
-                    
-                    # Butona tıkla
                     btn = normal_mode_links[0]
-                    # Görünür olduğundan emin ol
                     driver.execute_script("arguments[0].scrollIntoView();", btn)
                     btn.click()
-                    time.sleep(3) # Sayfa yenilenmesi için bekle
+                    time.sleep(3)
                     st.success("✅ Mod seçimi geçildi.")
                 else:
-                    st.success("✅ Sayfa doğrudan analiz modunda açıldı (Mod seçimine gerek kalmadı).")
-                    
-            except Exception as e:
-                st.error(f"Mod kontrolünde hata: {e}")
-            
+                    st.success("✅ Doğrudan analiz sayfası açıldı.")
+            except:
+                pass
             finally:
-                driver.implicitly_wait(10) # Normal beklemeye dön
+                driver.implicitly_wait(10)
 
-            # --- ADIM 2: PFAM DOMAINS SEÇİMİ ---
-            st.info("2. 'Pfam domains' kutucuğu ayarlanıyor...")
+            # --- ADIM 2: PFAM DOMAINS SEÇİMİ (YENİ STRATEJİ) ---
+            st.info("2. 'Pfam domains' kutucuğu aranıyor...")
+            pfam_found = False
+            
             try:
-                # Pfam kutucuğunu bul (Value değeri genellikle 'DO_PFAM' olur veya metinden buluruz)
-                # SMART kaynak kodunda checkbox name="DO_PFAM" şeklindedir.
-                pfam_checkbox = driver.find_element(By.XPATH, "//input[@value='DO_PFAM']")
-                
-                # Seçili değilse tıkla
-                if not pfam_checkbox.is_selected():
-                    # Checkbox bazen görünmez olabilir, Javascript ile tıklamak daha garantidir
-                    driver.execute_script("arguments[0].click();", pfam_checkbox)
-                    st.success("✅ 'Pfam domains' işaretlendi.")
-                else:
-                    st.info("ℹ️ 'Pfam domains' zaten seçili.")
-                    
-            except Exception as e:
-                st.error(f"❌ Pfam kutucuğu bulunamadı: {e}")
+                # YÖNTEM A: İsim (Name) ile arama (En standart yöntem)
+                pfam_checkbox = driver.find_element(By.NAME, "DO_PFAM")
+                st.write("🔹 Yöntem A (By Name) ile bulundu.")
+                pfam_found = True
+            except:
+                # YÖNTEM B: Metin bazlı XPath (Yazısı 'Pfam domains' olan input)
+                try:
+                    # Input, "Pfam domains" metninin hemen öncesinde veya sonrasında olabilir
+                    # Bu XPath, sayfa içinde "Pfam domains" metnini içeren bir elementin yakınındaki inputu arar
+                    pfam_checkbox = driver.find_element(By.XPATH, "//input[parent::*[contains(text(), 'Pfam domains')]] | //input[following-sibling::text()[contains(., 'Pfam domains')]]")
+                    st.write("🔹 Yöntem B (By Text) ile bulundu.")
+                    pfam_found = True
+                except:
+                    st.error("❌ Pfam kutusu standart yöntemlerle bulunamadı.")
+
+            if pfam_found and pfam_checkbox:
+                try:
+                    # Tikli değilse tıkla
+                    if not pfam_checkbox.is_selected():
+                        # Javascript ile tıklamak en garantisidir (Görünmez olsa bile tıklar)
+                        driver.execute_script("arguments[0].click();", pfam_checkbox)
+                        st.success("✅ 'Pfam domains' işaretlendi.")
+                    else:
+                        st.info("ℹ️ 'Pfam domains' zaten seçili.")
+                except Exception as e:
+                    st.error(f"Tıklama hatası: {e}")
+            else:
+                # Bulamazsa HTML yapısını görelim
+                st.warning("Sayfa yapısı beklenenden farklı. HTML analizi:")
+                with st.expander("HTML Kaynağı"):
+                    st.code(driver.page_source[:5000], language='html')
 
             # --- ADIM 3: SEKANS GİRİŞİ ---
             st.info("3. Test sekansı giriliyor...")
             try:
                 seq_box = driver.find_element(By.NAME, "SEQUENCE")
                 seq_box.clear()
-                # Test için kısa bir protein sekansı
                 test_seq = "MKTLLILAVSLIAAGLSQG" 
                 seq_box.send_keys(test_seq)
-                st.success(f"✅ Sekans kutuya yazıldı: {test_seq}")
-                
+                st.success(f"✅ Sekans yazıldı: {test_seq}")
             except Exception as e:
-                st.error(f"❌ Sekans kutusu bulunamadı: {e}")
+                st.error(f"❌ Sekans kutusu hatası: {e}")
 
-            # Ekran Görüntüsü Al
+            # Fotoğraf Al
             time.sleep(1)
-            driver.save_screenshot("form_filled.png")
-            st.info("⏹️ İşlem durduruldu. 'Analizi Başlat' butonuna TIKLANMADI.")
+            driver.save_screenshot("step4_fix.png")
+            st.info("⏹️ Hazırlık tamam. (Butona henüz tıklanmadı)")
 
         with img_col:
-            st.subheader("Formun Son Hali")
-            if os.path.exists("form_filled.png"):
-                st.image("form_filled.png", caption="Pfam Seçili + Sekans Girilmiş")
+            st.subheader("Form Son Durum")
+            if os.path.exists("step4_fix.png"):
+                st.image("step4_fix.png", caption="Pfam Seçili mi? (Tik işaretini kontrol et)")
                 
         driver.quit()
