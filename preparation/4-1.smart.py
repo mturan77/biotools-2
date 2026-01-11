@@ -1,161 +1,136 @@
 import streamlit as st
 import pandas as pd
-import requests
-from bs4 import BeautifulSoup
 from Bio import SeqIO
 import io
 import time
-import urllib3
-import re
-from urllib.parse import urljoin
+import sys
+import os
 
-# SSL hatalarını gizle
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# Selenium ve Webdriver Manager
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+from webdriver_manager.core.os_manager import ChromeType
+from bs4 import BeautifulSoup
 
-st.set_page_config(page_title="SMART Analizörü (Auto-Clicker)", layout="wide")
-st.title("🧬 SMART Protein Analizörü (Akıllı Link Takibi)")
-st.markdown("Bu sürüm, 'Normal Mode' butonunu sayfada arar, bulur ve tıklar. 404 hatası vermez.")
+st.set_page_config(page_title="SMART Selenium Analizörü", layout="wide")
+st.title("🧬 SMART Analizörü (Cloud Uyumlu Selenium)")
 
-# --- Yardımcı Fonksiyonlar ---
-
-def get_base_url():
-    return "https://smart.embl-heidelberg.de/smart/show_motifs.pl"
-
-def handle_mode_selection(session, html_content, log_container):
+# --- Tarayıcı Ayarları (Kritik Bölüm) ---
+def get_driver():
     """
-    Eğer 'Select Mode' sayfası geldiyse, sayfadaki 'Normal Mode' linkini bulur ve tıklar.
+    Streamlit Cloud ve Local ortam için optimize edilmiş Chrome Driver ayarları.
     """
-    soup = BeautifulSoup(html_content, 'html.parser')
+    chrome_options = Options()
     
-    # Sayfadaki tüm linkleri tara
-    links = soup.find_all('a', href=True)
-    normal_mode_link = None
+    # --- Headless Mod (Sunucu için şart) ---
+    chrome_options.add_argument("--headless")  # Ekransız çalıştır
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument("--ignore-certificate-errors")
     
-    # Linklerin içinde "Normal" kelimesi geçen veya görsellere bak
-    for link in links:
-        # Metin kontrolü
-        if "Normal mode" in link.get_text(strip=True) or "Normal SMART" in link.get_text(strip=True):
-            normal_mode_link = link['href']
-            break
-        
-        # Bazen buton görseldir, görselin alt textine bak
-        img = link.find('img')
-        if img and 'alt' in img.attrs and "Normal" in img['alt']:
-            normal_mode_link = link['href']
-            break
-            
-    if normal_mode_link:
-        # Link bazen relative (göreceli) olur, onu tam URL'ye çevir
-        full_url = urljoin("https://smart.embl-heidelberg.de/smart/", normal_mode_link)
-        log_container.info(f"🔗 Normal Mode butonu bulundu: {normal_mode_link}. Tıklanıyor...")
-        
-        try:
-            # Butona sanal tıklama yap
-            session.get(full_url, verify=False, timeout=30)
-            log_container.success("✅ Mod seçimi yapıldı. Tekrar deneniyor...")
-            return True
-        except Exception as e:
-            log_container.error(f"❌ Butona tıklanamadı: {e}")
-            return False
-    else:
-        log_container.error("❌ Sayfada 'Normal Mode' butonu bulunamadı. HTML yapısı değişmiş olabilir.")
-        return False
+    # User Agent (Bot gibi görünmemek için)
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
 
-def query_smart_robust(session, sequence, protein_id, log_container):
-    url = get_base_url()
-    
-    payload = {
-        'SEQUENCE': sequence,
-        'DO_PFAM': 'DO_PFAM',
-        'INCLUDE_SIGNALP': 'OFF',
-        'INCLUDE_REPEATS': 'OFF',
-    }
-    
     try:
-        # 1. İstek Gönder
-        response = session.post(url, data=payload, verify=False, timeout=60)
+        # Streamlit Cloud üzerinde Chromium genelde bu yollarda olur, kontrol edelim.
+        # webdriver-manager otomatik bulmaya çalışacak ama biz ChromeType.CHROMIUM diyerek işi garantiye alıyoruz.
         
-        # 2. Mod Seçimi Sayfası mı Geldi?
-        if "Select your preferred SMART mode" in response.text:
-            log_container.warning(f"⚠️ {protein_id}: Sunucu mod seçimi istedi. Otomatik seçiliyor...")
-            
-            # Mod seçimini hallet
-            success = handle_mode_selection(session, response.text, log_container)
-            if success:
-                # Mod seçildi, isteği TEKRARLA
-                time.sleep(1)
-                response = session.post(url, data=payload, verify=False, timeout=60)
-            else:
-                return None # Mod seçilemedi
-        
-        # 3. Bekleme Sırası (Queue) Kontrolü
-        attempt = 0
-        max_attempts = 15
-        
-        while attempt < max_attempts:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Meta Refresh Var mı?
-            meta_refresh = soup.find("meta", attrs={"http-equiv": re.compile("refresh", re.I)})
-            
-            if meta_refresh:
-                content = meta_refresh.get("content")
-                if content and "URL=" in content:
-                    next_url_part = content.split("URL=")[1].strip().replace("'", "").replace('"', "")
-                    full_next_url = urljoin("https://smart.embl-heidelberg.de/smart/", next_url_part)
-                    
-                    log_container.info(f"⏳ {protein_id}: İşleniyor... (Sıra {attempt+1})")
-                    time.sleep(3)
-                    
-                    response = session.get(full_next_url, verify=False, timeout=60)
-                    attempt += 1
-                    continue
-            break
-            
-        return response.text
-
+        service = Service(ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install())
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+        return driver
     except Exception as e:
-        log_container.error(f"💥 Bağlantı koptu ({protein_id}): {e}")
+        st.error(f"Driver başlatılamadı. Hata: {e}")
         return None
 
-def parse_final_html(html_content, protein_id):
-    if not html_content: return []
-    
-    soup = BeautifulSoup(html_content, 'html.parser')
-    results = []
-    
-    # Tabloları bul
-    tables = soup.find_all("table")
-    target_table = None
-    
-    for table in tables:
-        headers = [th.get_text(strip=True) for th in table.find_all("th")]
-        if "Feature" in headers and ("Start" in headers or "Begin" in headers):
-            target_table = table
-            break
-            
-    if target_table:
-        rows = target_table.find_all("tr")[1:]
-        for row in rows:
-            cols = row.find_all("td")
-            if len(cols) >= 3:
-                feature_name = cols[0].get_text(strip=True)
-                if cols[0].find('a'):
-                    feature_name = cols[0].find('a').get_text(strip=True)
+# --- Analiz Fonksiyonları ---
 
-                start_pos = cols[1].get_text(strip=True)
-                end_pos = cols[2].get_text(strip=True)
-                e_value = cols[3].get_text(strip=True) if len(cols) > 3 else "N/A"
+def run_smart_analysis(driver, sequences, progress_bar, log_area):
+    all_features = []
+    
+    # 1. Siteye Git ve Mod Seç
+    base_url = "https://smart.embl-heidelberg.de/smart/show_motifs.pl"
+    
+    # Önce Modu Ayarla
+    try:
+        log_area.info("🌍 SMART sunucusuna bağlanılıyor (Normal Mode)...")
+        driver.get("https://smart.embl-heidelberg.de/smart/change_mode.pl?to=NORMAL")
+        time.sleep(2)
+    except Exception as e:
+        log_area.error(f"Mod seçim hatası: {e}")
+
+    # 2. Döngüye Başla
+    for i, seq_record in enumerate(sequences):
+        prot_id = seq_record.id
+        prot_seq = str(seq_record.seq)
+        
+        log_area.write(f"🧬 İşleniyor: **{prot_id}** ({i+1}/{len(sequences)})")
+        
+        # URL oluştur ve git
+        final_url = f"{base_url}?SEQUENCE={prot_seq}&DO_PFAM=DO_PFAM&INCLUDE_SIGNALP=OFF&INCLUDE_REPEATS=OFF"
+        driver.get(final_url)
+        
+        # Bekleme Mantığı
+        attempt = 0
+        found = False
+        
+        while attempt < 15: # Maksimum 30 saniye bekle
+            page_source = driver.page_source
+            
+            # Sonuç geldi mi?
+            if "Confidently predicted domains" in page_source:
+                # Parse et
+                soup = BeautifulSoup(page_source, 'html.parser')
+                tables = soup.find_all("table")
+                target_table = None
                 
-                if start_pos.isdigit():
-                    results.append({
-                        "Protein_ID": protein_id,
-                        "Feature": feature_name,
-                        "Start": int(start_pos),
-                        "End": int(end_pos),
-                        "E-value": e_value
-                    })
-    return results
+                for table in tables:
+                    headers = [th.get_text(strip=True) for th in table.find_all("th")]
+                    if "Feature" in headers and ("Start" in headers or "Begin" in headers):
+                        target_table = table
+                        break
+                
+                if target_table:
+                    rows = target_table.find_all("tr")[1:]
+                    for row in rows:
+                        cols = row.find_all("td")
+                        if len(cols) >= 3:
+                            f_name = cols[0].get_text(strip=True)
+                            if cols[0].find('a'): f_name = cols[0].find('a').get_text(strip=True)
+                            start = cols[1].get_text(strip=True)
+                            end = cols[2].get_text(strip=True)
+                            e_val = cols[3].get_text(strip=True) if len(cols) > 3 else "N/A"
+                            
+                            if start.isdigit():
+                                all_features.append({
+                                    "Protein_ID": prot_id,
+                                    "Feature": f_name,
+                                    "Start": int(start),
+                                    "End": int(end),
+                                    "E-value": e_val
+                                })
+                    found = True
+                break # While döngüsünden çık
+            
+            elif "No domains found" in page_source:
+                found = True # Boş ama işlem tamam
+                break
+            
+            elif "Select your preferred SMART mode" in page_source:
+                 driver.get("https://smart.embl-heidelberg.de/smart/change_mode.pl?to=NORMAL")
+                 time.sleep(1)
+                 driver.get(final_url)
+            
+            # Beklemeye devam et
+            time.sleep(2)
+            attempt += 1
+            
+        progress_bar.progress((i + 1) / len(sequences))
+        
+    return all_features
 
 # --- Arayüz ---
 
@@ -165,49 +140,32 @@ if uploaded_file and st.button("🚀 Analizi Başlat"):
     stringio = io.StringIO(uploaded_file.getvalue().decode("utf-8"))
     sequences = list(SeqIO.parse(stringio, "fasta"))
     
-    st.info(f"Toplam {len(sequences)} sekans işlenecek.")
+    st.info(f"Toplam {len(sequences)} sekans işlenecek. Cloud ortamında Chrome başlatılıyor...")
     
-    # Session Oluştur (Tarayıcı Gibi Davran)
-    session = requests.Session()
-    session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    })
+    log_box = st.empty()
+    p_bar = st.progress(0)
     
-    log_area = st.container()
-    progress_bar = st.progress(0)
-    all_data = []
+    driver = get_driver()
     
-    for i, seq_record in enumerate(sequences):
-        prot_id = seq_record.id
-        prot_seq = str(seq_record.seq)
-        
-        with log_area.expander(f"[{i+1}/{len(sequences)}] {prot_id}", expanded=False):
-            html_out = query_smart_robust(session, prot_seq, prot_id, st)
+    if driver:
+        try:
+            results = run_smart_analysis(driver, sequences, p_bar, log_box)
             
-            if html_out:
-                feats = parse_final_html(html_out, prot_id)
-                if feats:
-                    st.success(f"🎉 {len(feats)} özellik bulundu.")
-                    all_data.extend(feats)
-                else:
-                    if "No domains found" in html_out:
-                        st.warning("Domain bulunamadı.")
-                    else:
-                        st.warning("Sonuç tablosu parse edilemedi.")
-        
-        progress_bar.progress((i + 1) / len(sequences))
-        time.sleep(1.0)
-        
-    st.success("Tüm İşlemler Bitti!")
-    
-    if all_data:
-        df = pd.DataFrame(all_data)
-        st.dataframe(df)
-        
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name='SMART_Results')
+            log_box.success("✅ İşlem Tamamlandı!")
             
-        st.download_button("📥 Excel İndir", output.getvalue(), "smart_sonuclar_v3.xlsx")
-    else:
-        st.error("Hiçbir sonuç alınamadı.")
+            if results:
+                df = pd.DataFrame(results)
+                st.dataframe(df)
+                
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    df.to_excel(writer, index=False, sheet_name='SMART_Results')
+                
+                st.download_button("📥 Excel İndir", output.getvalue(), "smart_sonuclar.xlsx")
+            else:
+                st.warning("Hiçbir sonuç bulunamadı.")
+                
+        except Exception as e:
+            st.error(f"Bir hata oluştu: {e}")
+        finally:
+            driver.quit()
