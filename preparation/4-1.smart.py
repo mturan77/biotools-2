@@ -5,6 +5,10 @@ from bs4 import BeautifulSoup
 from Bio import SeqIO
 import io
 import time
+import urllib3
+
+# SSL Uyarılarını Gizle (verify=False kullanacağımız için terminal kirlenmesin)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- Sayfa Ayarları ---
 st.set_page_config(page_title="SMART Domain Analizörü", layout="wide")
@@ -12,8 +16,7 @@ st.set_page_config(page_title="SMART Domain Analizörü", layout="wide")
 st.title("🧬 SMART Protein Domain Analizörü")
 st.markdown("""
 Bu araç, yüklediğiniz **FASTA (.fa)** dosyasındaki protein sekanslarını alır, 
-**[SMART](https://smart.embl-heidelberg.de/)** veritabanında (Pfam dahil) taratır 
-ve **"Confidently predicted domains"** tablosunu Excel formatına dönüştürür.
+**SMART** veritabanında (Pfam dahil) taratır ve **"Confidently predicted domains"** tablosunu Excel formatına dönüştürür.
 """)
 
 # --- Yan Fonksiyonlar ---
@@ -21,63 +24,60 @@ ve **"Confidently predicted domains"** tablosunu Excel formatına dönüştürü
 def query_smart(sequence, protein_id):
     """
     SMART sunucusuna istek atar ve HTML içeriğini döndürür.
+    SSL doğrulaması devre dışı bırakılmıştır.
     """
     url = "https://smart.embl-heidelberg.de/smart/show_motifs.pl"
     
-    # SMART Form Parametreleri
-    # DO_PFAM=DO_PFAM -> Pfam domainlerini dahil et (Kullanıcı isteği)
     payload = {
         'SEQUENCE': sequence,
-        'DO_PFAM': 'DO_PFAM',  # Pfam kutucuğunu işaretler
-        'INCLUDE_SIGNALP': 'OFF', # İsteğe bağlı, varsayılan kapalı
-        'INCLUDE_REPEATS': 'OFF', # İsteğe bağlı
-        'TEXTONLY': 1          # Sonucu daha kolay parse etmek için text/basit HTML modu denemesi (bazen çalışır)
+        'DO_PFAM': 'DO_PFAM',
+        'INCLUDE_SIGNALP': 'OFF',
+        'INCLUDE_REPEATS': 'OFF',
+        'TEXTONLY': 1
     }
     
     try:
-        # Sunucuya yüklenmemek için kısa bir bekleme (Politeness)
-        time.sleep(1.5) 
-        response = requests.post(url, data=payload, timeout=60)
+        time.sleep(1.0) # Sunucuya nazik davranmak için bekleme
+        
+        # DÜZELTME BURADA YAPILDI: verify=False eklendi
+        response = requests.post(url, data=payload, timeout=60, verify=False)
+        
         response.raise_for_status()
         return response.text
     except Exception as e:
-        st.error(f"Hata oluştu ({protein_id}): {e}")
+        # Hata mesajını biraz daha temiz gösterelim
+        st.error(f"Hata ({protein_id}): Sunucuya bağlanılamadı. (Detay: {str(e)[:100]}...)")
         return None
 
 def parse_smart_results(html_content, protein_id):
     """
-    Dönen HTML sayfasındaki 'Confidently predicted domains' tablosunu bulur ve veriyi çeker.
+    Dönen HTML sayfasındaki 'Confidently predicted domains' tablosunu bulur.
     """
     if not html_content:
         return []
 
     soup = BeautifulSoup(html_content, 'html.parser')
     results = []
-
-    # SMART sonuçlarında tabloları bulmaya çalışalım.
-    # Genellikle "Confidently predicted domains..." başlığından sonra gelir.
     
-    # Tüm tabloları gez ve doğru olanı bul
     tables = soup.find_all("table")
     target_table = None
     
+    # Doğru tabloyu bulmak için başlıkları kontrol et
     for table in tables:
-        # Tablonun önceki elementlerine bakarak başlığı kontrol etmeye çalışabiliriz
-        # Ya da tablo başlık satırlarını kontrol edebiliriz
         headers = [th.get_text(strip=True) for th in table.find_all("th")]
+        # SMART tablosunda genellikle bu başlıklar bulunur
         if "Feature" in headers and "Start" in headers and "End" in headers:
             target_table = table
             break
     
     if target_table:
-        rows = target_table.find_all("tr")[1:] # Başlık satırını atla
+        rows = target_table.find_all("tr")[1:] # Başlığı atla
         for row in rows:
             cols = row.find_all("td")
             if len(cols) >= 3:
-                # Veri temizliği
                 feature_name = cols[0].get_text(strip=True)
                 
-                # Bazen Feature ismi link içindedir, sadece text'i alalım
+                # Link içindeki ismi almayı dene (bazen daha temizdir)
                 if cols[0].find('a'):
                     feature_name = cols[0].find('a').get_text(strip=True)
 
@@ -85,7 +85,6 @@ def parse_smart_results(html_content, protein_id):
                 end_pos = cols[2].get_text(strip=True)
                 e_value = cols[3].get_text(strip=True) if len(cols) > 3 else "N/A"
                 
-                # Boş satırları veya görsel satırlarını elemek için kontrol
                 if start_pos.isdigit():
                     results.append({
                         "Protein_ID": protein_id,
@@ -102,18 +101,19 @@ def parse_smart_results(html_content, protein_id):
 uploaded_file = st.file_uploader("Protein Sekans Dosyasını Yükleyin (.fa / .fasta)", type=["fa", "fasta", "txt"])
 
 if uploaded_file is not None:
-    # Dosyayı Biopython ile oku
     stringio = io.StringIO(uploaded_file.getvalue().decode("utf-8"))
     sequences = list(SeqIO.parse(stringio, "fasta"))
     
-    st.write(f"📂 Toplam **{len(sequences)}** adet sekans bulundu. Analiz başlıyor...")
+    st.info(f"📂 Toplam **{len(sequences)}** adet sekans yüklendi.")
     
     if st.button("Analizi Başlat"):
         all_features = []
         
-        # Progress bar
         progress_bar = st.progress(0)
         status_text = st.empty()
+        
+        # Hata sayacı
+        error_count = 0
         
         for i, seq_record in enumerate(sequences):
             prot_id = seq_record.id
@@ -121,29 +121,27 @@ if uploaded_file is not None:
             
             status_text.text(f"İşleniyor: {prot_id} ({i+1}/{len(sequences)})")
             
-            # 1. SMART'a gönder
             html_result = query_smart(prot_seq, prot_id)
             
-            # 2. Sonucu Parse et
             if html_result:
                 features = parse_smart_results(html_result, prot_id)
                 all_features.extend(features)
+            else:
+                error_count += 1
             
-            # Progress güncelle
             progress_bar.progress((i + 1) / len(sequences))
         
-        status_text.text("✅ Analiz tamamlandı!")
+        status_text.text("✅ İşlem tamamlandı!")
         
-        # --- Sonuçları Göster ve İndir ---
+        if error_count > 0:
+            st.warning(f"{error_count} adet sekans sunucu hatası nedeniyle işlenemedi.")
+
         if all_features:
             df = pd.DataFrame(all_features)
             
             st.subheader("📊 Sonuç Tablosu")
             st.dataframe(df)
             
-            # Excel İndirme Butonu
-            
-            # Pandas ile Excel'e yazma (Hafızada)
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 df.to_excel(writer, index=False, sheet_name='SMART_Results')
@@ -151,10 +149,13 @@ if uploaded_file is not None:
             processed_data = output.getvalue()
             
             st.download_button(
-                label="📥 Sonuçları Excel Olarak İndir",
+                label="📥 Excel İndir",
                 data=processed_data,
                 file_name="smart_analiz_sonuclari.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         else:
-            st.warning("Hiçbir sekans için 'Confidently predicted domain' bulunamadı veya sunucu yanıt vermedi.")
+            if error_count == len(sequences):
+                st.error("Hiçbir sonuç alınamadı. Lütfen internet bağlantınızı kontrol edin veya SMART sunucusunun erişilebilir olduğundan emin olun.")
+            else:
+                st.info("İşlenen proteinlerde confident domain bulunamadı.")
