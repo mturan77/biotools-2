@@ -27,6 +27,11 @@ st.markdown("""
 <style>
     .stApp {background-color: #f8f9fa;}
     code {font-family: 'Consolas', monospace !important; font-size: 0.8rem;}
+    /* Log kutusu için özel stil */
+    div[data-testid="stVerticalBlock"] > div[data-testid="stVerticalBlock"] {
+        background-color: white;
+        border-radius: 5px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -78,10 +83,15 @@ if uploaded_file and st.button("🚀 Start Analysis & Generate Colored Excel"):
         q_place = st.empty()
         update_queue_display(q_place, df_queue)
         
+    # --- LOG ALANI DÜZELTMESİ BURADA ---
     with col_log:
         st.subheader("📟 Logs")
+        # Loglar 400px yükseklikte sabit bir kutuda olacak
         log_cont = st.container(height=400)
-        log_place = st.empty()
+        
+        # ÖNEMLİ: Placeholder'ı Container'ın İÇİNDE (with bloğu içinde) oluşturuyoruz.
+        with log_cont:
+            log_place = st.empty()
 
     if 'logs' not in st.session_state: st.session_state.logs = []
     st.session_state.logs = []
@@ -90,7 +100,9 @@ if uploaded_file and st.button("🚀 Start Analysis & Generate Colored Excel"):
         ts = datetime.datetime.now().strftime("%H:%M:%S")
         icon = "ℹ️" if level=="INFO" else "✅" if level=="SUCCESS" else "⚠️" if level=="WARNING" else "❌"
         st.session_state.logs.insert(0, f"[{ts}] {icon} {msg}")
-        with log_cont: log_place.code("\n".join(st.session_state.logs), language="bash")
+        
+        # Logları güncellerken placeholder'ı kullanıyoruz
+        log_place.code("\n".join(st.session_state.logs), language="bash")
 
     log(f"Initialized. Total sequences: {len(sequences)}", "INFO")
     
