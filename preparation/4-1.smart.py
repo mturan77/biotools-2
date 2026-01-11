@@ -35,6 +35,20 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# --- Session State Başlatma (Hafıza) ---
+if 'analysis_complete' not in st.session_state:
+    st.session_state.analysis_complete = False
+if 'final_excel_data' not in st.session_state:
+    st.session_state.final_excel_data = None
+if 'final_df' not in st.session_state:
+    st.session_state.final_df = None
+if 'filename' not in st.session_state:
+    st.session_state.filename = "SMART_Results.xlsx"
+if 'logs' not in st.session_state:
+    st.session_state.logs = []
+if 'queue_df' not in st.session_state:
+    st.session_state.queue_df = None
+
 # --- Driver ---
 def get_driver():
     chrome_options = Options()
@@ -61,13 +75,32 @@ def extract_number(text):
 def update_queue_display(placeholder, df):
     placeholder.dataframe(df, use_container_width=True, hide_index=True)
 
+def reset_analysis():
+    """Analizi sıfırla ve yeni dosya için hazırla"""
+    st.session_state.analysis_complete = False
+    st.session_state.final_excel_data = None
+    st.session_state.final_df = None
+    st.session_state.logs = []
+    st.session_state.queue_df = None
+    st.rerun()
+
 # --- SIDEBAR TASARIMI ---
 with st.sidebar:
     st.header("1. Input Configuration")
-    uploaded_file = st.file_uploader("Upload Source File (FASTA)", type=["fa", "fasta", "txt"])
+    
+    # Dosya yükleme
+    uploaded_file = st.file_uploader("Upload Source File (FASTA)", type=["fa", "fasta", "txt"], key="file_uploader")
+    
     st.divider()
     st.info("**ℹ️ Protocol:**\n1. Upload FASTA file.\n2. System detects species prefix.\n3. Results are distinctively colored.")
-    start_btn = st.button("🚀 Initialize Analysis Pipeline", type="primary", use_container_width=True)
+    
+    col_btn1, col_btn2 = st.columns(2)
+    with col_btn1:
+        # Analiz zaten yapıldıysa bu butonu pasif yapabiliriz veya aktif bırakabiliriz
+        start_btn = st.button("🚀 Start", type="primary", use_container_width=True, disabled=st.session_state.analysis_complete)
+    with col_btn2:
+        # Sıfırlama butonu
+        new_btn = st.button("🔄 New Analysis", on_click=reset_analysis, use_container_width=True)
 
 # --- ANA EKRAN TASARIMI ---
 st.title("🧬 SMART Database: Genomic Data Acquisition Protocol")
@@ -76,23 +109,34 @@ st.divider()
 
 # --- Main Logic ---
 
-if start_btn and uploaded_file:
+# Ekranda gösterilecek Log fonksiyonu
+def log(msg, level="INFO", placeholder=None):
+    ts = datetime.datetime.now().strftime("%H:%M:%S")
+    icon = "ℹ️" if level=="INFO" else "✅" if level=="SUCCESS" else "⚠️" if level=="WARNING" else "❌"
+    st.session_state.logs.insert(0, f"[{ts}] {icon} {msg}")
+    if placeholder:
+        placeholder.code("\n".join(st.session_state.logs), language="bash")
+
+# 1. DURUM: Analiz Henüz Başlamadıysa ve Start'a Basıldıysa
+if start_btn and uploaded_file and not st.session_state.analysis_complete:
     
-    # 1. Veriyi Oku
+    # Veriyi Oku
     stringio = io.StringIO(uploaded_file.getvalue().decode("utf-8"))
     sequences = list(SeqIO.parse(stringio, "fasta"))
     
-    # Prefix Belirleme
+    # Prefix
     file_prefix = "SMART"
     if len(sequences) > 0:
         first_id = sequences[0].id
         file_prefix = first_id[:4] if len(first_id) >= 4 else first_id
     
-    # 2. Ekran Düzeni
+    # Layout Kurulumu
     col_queue, col_log = st.columns([1.5, 1])
     
+    # Queue İlk Hazırlık
     queue_data = [{"Accession ID": s.id, "Status": "QUEUED", "Domains": 0} for s in sequences]
     df_queue = pd.DataFrame(queue_data)
+    st.session_state.queue_df = df_queue # Hafızaya al
     
     with col_queue:
         st.subheader("📋 Processing Queue")
@@ -105,31 +149,25 @@ if start_btn and uploaded_file:
         with log_cont:
             log_place = st.empty()
 
-    if 'logs' not in st.session_state: st.session_state.logs = []
-    st.session_state.logs = []
-
-    def log(msg, level="INFO"):
-        ts = datetime.datetime.now().strftime("%H:%M:%S")
-        icon = "ℹ️" if level=="INFO" else "✅" if level=="SUCCESS" else "⚠️" if level=="WARNING" else "❌"
-        st.session_state.logs.insert(0, f"[{ts}] {icon} {msg}")
-        log_place.code("\n".join(st.session_state.logs), language="bash")
-
-    log(f"Pipeline initialized. Target sequences: {len(sequences)}", "INFO")
+    # Log Başlangıcı
+    log(f"Pipeline initialized. Target sequences: {len(sequences)}", "INFO", log_place)
     
     driver = get_driver()
     all_results = []
     
     if driver:
-        log("Headless WebDriver connection established.", "SUCCESS")
+        log("Headless WebDriver connection established.", "SUCCESS", log_place)
         
         for idx, seq_record in enumerate(sequences):
             prot_id = seq_record.id
             prot_seq = str(seq_record.seq)
             
+            # Queue Update
             df_queue.loc[df_queue['Accession ID'] == prot_id, 'Status'] = '⏳ PROCESSING'
+            st.session_state.queue_df = df_queue
             update_queue_display(q_place, df_queue)
             
-            log(f"Processing Accession: {prot_id} ({idx+1}/{len(sequences)})", "INFO")
+            log(f"Processing Accession: {prot_id} ({idx+1}/{len(sequences)})", "INFO", log_place)
             
             try:
                 driver.get("https://smart.embl-heidelberg.de/")
@@ -147,7 +185,7 @@ if start_btn and uploaded_file:
                     if not pfam.is_selected(): driver.execute_script("arguments[0].click();", pfam)
                 except: pass
                 
-                # Input & Submit
+                # Submit
                 seq_in = driver.find_element(By.NAME, "SEQUENCE")
                 seq_in.clear()
                 seq_in.send_keys(prot_seq)
@@ -166,7 +204,7 @@ if start_btn and uploaded_file:
                         if len(rows) > 0 and "No data available" not in rows[0].text:
                             for row in rows:
                                 cols = row.find_elements(By.TAG_NAME, "td")
-                                if len(cols) >= 5: continue # Not Shown tablolarını atla
+                                if len(cols) >= 5: continue 
                                 
                                 if len(cols) >= 3:
                                     name = cols[0].text.strip()
@@ -200,21 +238,22 @@ if start_btn and uploaded_file:
                 if found:
                     df_queue.loc[df_queue['Accession ID'] == prot_id, 'Status'] = '✅ COMPLETED'
                     df_queue.loc[df_queue['Accession ID'] == prot_id, 'Domains'] = valid
-                    if valid > 0: log(f"Extraction successful. {valid} valid domains recorded.", "SUCCESS")
-                    else: log("No confident domains found for this sequence.", "WARNING")
+                    if valid > 0: log(f"Extraction successful. {valid} valid domains recorded.", "SUCCESS", log_place)
+                    else: log("No confident domains found for this sequence.", "WARNING", log_place)
                 else:
                     df_queue.loc[df_queue['Accession ID'] == prot_id, 'Status'] = '❌ TIMEOUT'
                     
             except Exception as e:
                 df_queue.loc[df_queue['Accession ID'] == prot_id, 'Status'] = '❌ FAILED'
-                log(f"Runtime Error: {str(e)[:40]}", "ERROR")
+                log(f"Runtime Error: {str(e)[:40]}", "ERROR", log_place)
             
+            st.session_state.queue_df = df_queue
             update_queue_display(q_place, df_queue)
 
         driver.quit()
-        st.success(f"Analysis Protocol Completed for {file_prefix}.")
+        log(f"Analysis Protocol Completed for {file_prefix}.", "SUCCESS", log_place)
         
-        # --- ÇOK RENKLİ EXCEL OLUŞTURMA ---
+        # --- EXCEL OLUŞTURMA VE HAFIZAYA ALMA ---
         if all_results:
             df_final = pd.DataFrame(all_results)
             df_final = df_final.sort_values(by=["Protein_ID", "Start"])
@@ -224,61 +263,76 @@ if start_btn and uploaded_file:
                 df_final.to_excel(writer, index=False, sheet_name='SMART_Domains')
                 ws = writer.sheets['SMART_Domains']
                 
-                # 1. Başlık Stili
+                # Başlık Stili
                 header_font = Font(bold=True, color="FFFFFF")
-                header_fill = PatternFill(start_color="203764", end_color="203764", fill_type="solid") # Koyu Lacivert
+                header_fill = PatternFill(start_color="203764", end_color="203764", fill_type="solid")
                 for cell in ws[1]:
                     cell.font = header_font
                     cell.fill = header_fill
                     cell.alignment = Alignment(horizontal="center")
                 
-                # 2. Pastel Renk Paleti (7 Farklı Renk)
-                # Açık Yeşil, Açık Mavi, Açık Turuncu, Açık Sarı, Açık Mor, Açık Gri, Açık Turkuaz
+                # Pastel Renkler
                 hex_colors = ["E2EFDA", "DDEBF7", "FCE4D6", "FFF2CC", "E4DFEC", "EDEDED", "D0E0E3"]
                 fills = [PatternFill(start_color=c, end_color=c, fill_type="solid") for c in hex_colors]
                 
                 current_protein = None
                 color_index = 0
                 
-                # 3. Satırları Boya (Döngüsel Renk Mantığı)
                 for row in ws.iter_rows(min_row=2, max_col=5):
                     protein_cell = row[0]
-                    
-                    # Eğer protein değiştiyse bir sonraki renge geç
                     if protein_cell.value != current_protein:
                         current_protein = protein_cell.value
-                        color_index = (color_index + 1) % len(fills) # Listeyi başa sardırarak döner
+                        color_index = (color_index + 1) % len(fills)
                     
                     current_fill = fills[color_index]
-                    
                     for cell in row:
                         cell.fill = current_fill
                         cell.border = Border(left=Side(style='thin', color="BFBFBF"), 
                                              right=Side(style='thin', color="BFBFBF"),
                                              bottom=Side(style='thin', color="BFBFBF"))
 
-                # 4. Sütun Genişliği
                 for column_cells in ws.columns:
                     length = max(len(str(cell.value)) for cell in column_cells)
                     ws.column_dimensions[get_column_letter(column_cells[0].column)].width = length + 4
 
-            st.divider()
-            st.subheader("📊 Final Organized Dataset")
-            st.dataframe(df_final, use_container_width=True)
+            # SONUÇLARI HAFIZAYA KAYDET
+            st.session_state.final_excel_data = output.getvalue()
+            st.session_state.final_df = df_final
+            st.session_state.filename = f"{file_prefix}_SMART_Results.xlsx"
+            st.session_state.analysis_complete = True
             
-            final_filename = f"{file_prefix}_SMART_Results.xlsx"
-            
-            st.download_button(
-                label=f"📥 Download Multi-Color Report ({final_filename})",
-                data=output.getvalue(),
-                file_name=final_filename,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                type="primary"
-            )
-        else:
-            st.warning("No data retrieved.")
+            st.rerun() # Sayfayı yenile ki aşağıdaki (2. Durum) blok çalışsın
 
-elif start_btn and not uploaded_file:
-    st.sidebar.error("⚠️ Please upload a FASTA file first.")
-else:
-    st.info("👈 Please upload a protein FASTA file from the sidebar to begin the protocol.")
+# 2. DURUM: Analiz Zaten Yapıldıysa (Hafızadan Göster)
+if st.session_state.analysis_complete and st.session_state.final_df is not None:
+    
+    col_queue, col_log = st.columns([1.5, 1])
+    
+    with col_queue:
+        st.subheader("📋 Processing Queue (Completed)")
+        if st.session_state.queue_df is not None:
+             update_queue_display(st.empty(), st.session_state.queue_df)
+        
+    with col_log:
+        st.subheader("📟 System Telemetry")
+        log_cont = st.container(height=450)
+        with log_cont:
+             st.code("\n".join(st.session_state.logs), language="bash")
+
+    st.divider()
+    st.success("✅ Analysis Completed & Cached.")
+    
+    st.subheader("📊 Final Organized Dataset")
+    st.dataframe(st.session_state.final_df, use_container_width=True)
+    
+    # İndirme Butonu (Hafızadaki veriyi kullanır)
+    st.download_button(
+        label=f"📥 Download Report ({st.session_state.filename})",
+        data=st.session_state.final_excel_data,
+        file_name=st.session_state.filename,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary"
+    )
+
+elif not start_btn and not st.session_state.analysis_complete:
+    st.info("👈 Please upload a protein FASTA file and click 'Start' to begin.")
