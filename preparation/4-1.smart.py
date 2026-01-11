@@ -70,11 +70,12 @@ with st.sidebar:
     
     st.divider()
     
-    # Bilgilendirme Kutusu (Mavi)
+    # Bilgilendirme Kutusu
     st.info("""
-    **ℹ️ Note:**
-    Processing speed depends on external server latency.
-    Please maintain browser connectivity during the analysis.
+    **ℹ️ Protocol:**
+    1. Upload FASTA file.
+    2. System auto-detects species prefix.
+    3. Results are filtered & colored.
     """)
     
     # Başlat Butonu
@@ -93,6 +94,13 @@ if start_btn and uploaded_file:
     stringio = io.StringIO(uploaded_file.getvalue().decode("utf-8"))
     sequences = list(SeqIO.parse(stringio, "fasta"))
     
+    # --- DOSYA İSMİ İÇİN PREFIX BELİRLEME ---
+    # İlk sekansın ID'sinin ilk 4 harfini al (Örn: Mdom00864 -> Mdom)
+    file_prefix = "SMART"
+    if len(sequences) > 0:
+        first_id = sequences[0].id
+        file_prefix = first_id[:4] if len(first_id) >= 4 else first_id
+    
     # 2. Ekran Düzeni (Queue ve Log Yan Yana)
     col_queue, col_log = st.columns([1.5, 1])
     
@@ -106,7 +114,7 @@ if start_btn and uploaded_file:
         update_queue_display(q_place, df_queue)
         
     with col_log:
-        st.subheader("📟 System Telemetry")
+        st.subheader(f"📟 System Telemetry ({file_prefix})")
         log_cont = st.container(height=450) # Log kutusu yüksekliği
         with log_cont:
             log_place = st.empty()
@@ -121,7 +129,8 @@ if start_btn and uploaded_file:
         # Logları güncelle
         log_place.code("\n".join(st.session_state.logs), language="bash")
 
-    log(f"Pipeline initialized. Target sequences: {len(sequences)}", "INFO")
+    log(f"Pipeline initialized for species tag: {file_prefix}", "INFO")
+    log(f"Target sequences: {len(sequences)}", "INFO")
     
     driver = get_driver()
     all_results = []
@@ -219,7 +228,7 @@ if start_btn and uploaded_file:
             update_queue_display(q_place, df_queue)
 
         driver.quit()
-        st.success("Analysis Protocol Completed.")
+        st.success(f"Analysis Protocol Completed for {file_prefix}.")
         
         # --- EXCEL GENERATION ---
         if all_results:
@@ -268,10 +277,13 @@ if start_btn and uploaded_file:
             st.subheader("📊 Final Organized Dataset")
             st.dataframe(df_final, use_container_width=True)
             
+            # Dinamik Dosya İsmi Oluşturma
+            final_filename = f"{file_prefix}_SMART_Results.xlsx"
+            
             st.download_button(
-                label="📥 Download Colored Excel Report (.xlsx)",
+                label=f"📥 Download Report ({final_filename})",
                 data=output.getvalue(),
-                file_name="SMART_Genomic_Analysis.xlsx",
+                file_name=final_filename,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 type="primary"
             )
