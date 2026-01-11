@@ -7,52 +7,62 @@ import io
 import time
 import urllib3
 import re
+from urllib.parse import urljoin
 
-# SSL Uyarılarını Sustur
+# SSL hatalarını gizle
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-st.set_page_config(page_title="SMART Analizörü (Auto-Mode)", layout="wide")
-st.title("🧬 SMART Protein Domain Analizörü")
-st.markdown("Bu araç önce **SMART Normal Mode** seçimini yapar, ardından proteinlerinizi tarar.")
+st.set_page_config(page_title="SMART Analizörü (Auto-Clicker)", layout="wide")
+st.title("🧬 SMART Protein Analizörü (Akıllı Link Takibi)")
+st.markdown("Bu sürüm, 'Normal Mode' butonunu sayfada arar, bulur ve tıklar. 404 hatası vermez.")
 
-# --- Session ve Mod Ayarları ---
+# --- Yardımcı Fonksiyonlar ---
 
-def create_smart_session(log_container):
+def get_base_url():
+    return "https://smart.embl-heidelberg.de/smart/show_motifs.pl"
+
+def handle_mode_selection(session, html_content, log_container):
     """
-    Bir oturum açar ve 'Normal Mode'u aktif hale getirir.
+    Eğer 'Select Mode' sayfası geldiyse, sayfadaki 'Normal Mode' linkini bulur ve tıklar.
     """
-    session = requests.Session()
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    }
-    session.headers.update(headers)
+    soup = BeautifulSoup(html_content, 'html.parser')
     
-    # Adım 1: Mod Değiştirme URL'sine git (Siteye 'Normal Mode' istediğimizi söylüyoruz)
-    # SMART'ın mod değiştirme mekanizmasını tetikliyoruz.
-    mode_url = "https://smart.embl-heidelberg.de/smart/change_mode.pl?to=NORMAL"
+    # Sayfadaki tüm linkleri tara
+    links = soup.find_all('a', href=True)
+    normal_mode_link = None
     
-    try:
-        log_container.info("🔌 Sunucuya bağlanılıyor ve 'Normal Mode' seçiliyor...")
-        resp = session.get(mode_url, verify=False, timeout=30)
+    # Linklerin içinde "Normal" kelimesi geçen veya görsellere bak
+    for link in links:
+        # Metin kontrolü
+        if "Normal mode" in link.get_text(strip=True) or "Normal SMART" in link.get_text(strip=True):
+            normal_mode_link = link['href']
+            break
         
-        if resp.status_code == 200:
-            log_container.success("✅ Normal Mode başarıyla seçildi. Oturum hazır.")
-        else:
-            log_container.warning(f"⚠️ Mod seçimi sırasında beklenmedik durum kodu: {resp.status_code}")
+        # Bazen buton görseldir, görselin alt textine bak
+        img = link.find('img')
+        if img and 'alt' in img.attrs and "Normal" in img['alt']:
+            normal_mode_link = link['href']
+            break
             
-    except Exception as e:
-        log_container.error(f"❌ Oturum açılırken hata oluştu: {e}")
-        return None
+    if normal_mode_link:
+        # Link bazen relative (göreceli) olur, onu tam URL'ye çevir
+        full_url = urljoin("https://smart.embl-heidelberg.de/smart/", normal_mode_link)
+        log_container.info(f"🔗 Normal Mode butonu bulundu: {normal_mode_link}. Tıklanıyor...")
+        
+        try:
+            # Butona sanal tıklama yap
+            session.get(full_url, verify=False, timeout=30)
+            log_container.success("✅ Mod seçimi yapıldı. Tekrar deneniyor...")
+            return True
+        except Exception as e:
+            log_container.error(f"❌ Butona tıklanamadı: {e}")
+            return False
+    else:
+        log_container.error("❌ Sayfada 'Normal Mode' butonu bulunamadı. HTML yapısı değişmiş olabilir.")
+        return False
 
-    return session
-
-# --- Analiz Fonksiyonları ---
-
-def query_smart_sequence(session, sequence, protein_id, log_container):
-    """
-    Hazırlanmış session (oturum) ile proteini gönderir.
-    """
-    base_url = "https://smart.embl-heidelberg.de/smart/show_motifs.pl"
+def query_smart_robust(session, sequence, protein_id, log_container):
+    url = get_base_url()
     
     payload = {
         'SEQUENCE': sequence,
@@ -62,61 +72,55 @@ def query_smart_sequence(session, sequence, protein_id, log_container):
     }
     
     try:
-        # İsteği gönder
-        response = session.post(base_url, data=payload, verify=False, timeout=60)
+        # 1. İstek Gönder
+        response = session.post(url, data=payload, verify=False, timeout=60)
         
-        # Bekleme (Queue) Kontrolü
+        # 2. Mod Seçimi Sayfası mı Geldi?
+        if "Select your preferred SMART mode" in response.text:
+            log_container.warning(f"⚠️ {protein_id}: Sunucu mod seçimi istedi. Otomatik seçiliyor...")
+            
+            # Mod seçimini hallet
+            success = handle_mode_selection(session, response.text, log_container)
+            if success:
+                # Mod seçildi, isteği TEKRARLA
+                time.sleep(1)
+                response = session.post(url, data=payload, verify=False, timeout=60)
+            else:
+                return None # Mod seçilemedi
+        
+        # 3. Bekleme Sırası (Queue) Kontrolü
         attempt = 0
-        max_attempts = 15 
+        max_attempts = 15
         
         while attempt < max_attempts:
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # Eğer hala "Select your preferred SMART mode" sayfası geliyorsa, zorla tekrar deneyelim
-            if "Select your preferred SMART mode" in response.text:
-                log_container.warning(f"⚠️ {protein_id}: Mod seçimi ekranı tekrar geldi. Modu zorluyorum...")
-                session.get("https://smart.embl-heidelberg.de/smart/change_mode.pl?to=NORMAL", verify=False)
-                response = session.post(base_url, data=payload, verify=False, timeout=60)
-                attempt += 1
-                continue
-
-            # Meta refresh (Bekleme Ekranı) var mı?
+            # Meta Refresh Var mı?
             meta_refresh = soup.find("meta", attrs={"http-equiv": re.compile("refresh", re.I)})
             
             if meta_refresh:
                 content = meta_refresh.get("content")
                 if content and "URL=" in content:
-                    # URL'yi temizle
                     next_url_part = content.split("URL=")[1].strip().replace("'", "").replace('"', "")
+                    full_next_url = urljoin("https://smart.embl-heidelberg.de/smart/", next_url_part)
                     
-                    if next_url_part.startswith("http"):
-                        next_url = next_url_part
-                    else:
-                        # Bazen başında /smart/ olur bazen olmaz, kontrol et
-                        if next_url_part.startswith("/smart/"):
-                            next_url = f"https://smart.embl-heidelberg.de{next_url_part}"
-                        else:
-                            next_url = f"https://smart.embl-heidelberg.de/smart/{next_url_part}"
+                    log_container.info(f"⏳ {protein_id}: İşleniyor... (Sıra {attempt+1})")
+                    time.sleep(3)
                     
-                    log_container.info(f"⏳ {protein_id}: Sunucu işliyor... (Sıra {attempt+1})")
-                    time.sleep(3) # 3 saniye bekle
-                    response = session.get(next_url, verify=False, timeout=60)
+                    response = session.get(full_next_url, verify=False, timeout=60)
                     attempt += 1
                     continue
-            
-            # Döngüden çıkış (Sonuç geldi)
             break
             
         return response.text
 
     except Exception as e:
-        log_container.error(f"❌ {protein_id} Hatası: {e}")
+        log_container.error(f"💥 Bağlantı koptu ({protein_id}): {e}")
         return None
 
-def parse_results(html_content, protein_id, log_container):
-    if not html_content:
-        return []
-
+def parse_final_html(html_content, protein_id):
+    if not html_content: return []
+    
     soup = BeautifulSoup(html_content, 'html.parser')
     results = []
     
@@ -131,8 +135,7 @@ def parse_results(html_content, protein_id, log_container):
             break
             
     if target_table:
-        log_container.write(f"✅ {protein_id}: Tablo bulundu ve ayrıştırılıyor.")
-        rows = target_table.find_all("tr")[1:] 
+        rows = target_table.find_all("tr")[1:]
         for row in rows:
             cols = row.find_all("td")
             if len(cols) >= 3:
@@ -152,77 +155,59 @@ def parse_results(html_content, protein_id, log_container):
                         "End": int(end_pos),
                         "E-value": e_value
                     })
-    else:
-        # Hata ayıklama için: Eğer sonuç yoksa ve "No domains found" yazmıyorsa HTML'i göster
-        if "No domains found" in html_content:
-            log_container.warning(f"🔸 {protein_id}: Domain bulunamadı (SMART sonucu).")
-        else:
-            # log_container.error(f"⚠️ {protein_id}: Beklenmedik sayfa yapısı.")
-            # İsteğe bağlı: HTML debug
-            pass
-            
     return results
 
-# --- Ana Uygulama ---
+# --- Arayüz ---
 
-uploaded_file = st.file_uploader("Protein FASTA Dosyasını Yükle", type=["fa", "fasta", "txt"])
+uploaded_file = st.file_uploader("Protein FASTA Dosyası", type=["fa", "fasta", "txt"])
 
-if uploaded_file is not None:
+if uploaded_file and st.button("🚀 Analizi Başlat"):
     stringio = io.StringIO(uploaded_file.getvalue().decode("utf-8"))
     sequences = list(SeqIO.parse(stringio, "fasta"))
     
-    st.info(f"📂 **{len(sequences)}** adet sekans yüklendi.")
+    st.info(f"Toplam {len(sequences)} sekans işlenecek.")
     
-    if st.button("🚀 Analizi Başlat"):
+    # Session Oluştur (Tarayıcı Gibi Davran)
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    })
+    
+    log_area = st.container()
+    progress_bar = st.progress(0)
+    all_data = []
+    
+    for i, seq_record in enumerate(sequences):
+        prot_id = seq_record.id
+        prot_seq = str(seq_record.seq)
         
-        # Log Alanı
-        log_box = st.container()
+        with log_area.expander(f"[{i+1}/{len(sequences)}] {prot_id}", expanded=False):
+            html_out = query_smart_robust(session, prot_seq, prot_id, st)
+            
+            if html_out:
+                feats = parse_final_html(html_out, prot_id)
+                if feats:
+                    st.success(f"🎉 {len(feats)} özellik bulundu.")
+                    all_data.extend(feats)
+                else:
+                    if "No domains found" in html_out:
+                        st.warning("Domain bulunamadı.")
+                    else:
+                        st.warning("Sonuç tablosu parse edilemedi.")
         
-        # 1. OTURUM BAŞLAT VE MODU SEÇ
-        session = create_smart_session(log_box)
+        progress_bar.progress((i + 1) / len(sequences))
+        time.sleep(1.0)
         
-        if session:
-            all_features = []
-            progress_bar = st.progress(0)
+    st.success("Tüm İşlemler Bitti!")
+    
+    if all_data:
+        df = pd.DataFrame(all_data)
+        st.dataframe(df)
+        
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='SMART_Results')
             
-            for i, seq_record in enumerate(sequences):
-                prot_id = seq_record.id
-                prot_seq = str(seq_record.seq)
-                
-                # Her protein için küçük bir expander (rahat okunur)
-                with log_box.expander(f"[{i+1}/{len(sequences)}] {prot_id}", expanded=False):
-                    
-                    # Gönder
-                    html_result = query_smart_sequence(session, prot_seq, prot_id, st)
-                    
-                    # Parse Et
-                    if html_result:
-                        features = parse_results(html_result, prot_id, st)
-                        if features:
-                            st.success(f"🎉 {len(features)} özellik bulundu.")
-                            all_features.extend(features)
-                
-                progress_bar.progress((i + 1) / len(sequences))
-                time.sleep(1.0) # Sunucuya nefes aldır
-            
-            st.success("🏁 Tüm işlemler tamamlandı!")
-            
-            # --- Sonuç İndirme ---
-            if all_features:
-                df = pd.DataFrame(all_features)
-                st.divider()
-                st.subheader("📊 Sonuç Tablosu")
-                st.dataframe(df)
-                
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                    df.to_excel(writer, index=False, sheet_name='SMART_Results')
-                
-                st.download_button(
-                    label="📥 Excel İndir",
-                    data=output.getvalue(),
-                    file_name="smart_sonuclar_final.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-            else:
-                st.warning("Sonuç dosyası boş. Hiçbir domain bulunamadı.")
+        st.download_button("📥 Excel İndir", output.getvalue(), "smart_sonuclar_v3.xlsx")
+    else:
+        st.error("Hiçbir sonuç alınamadı.")
