@@ -5,3 +5,4 @@ requests
 openpyxl
 pandas
 webdriver-manager
+biopython
