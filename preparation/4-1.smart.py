@@ -7,18 +7,16 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
 from webdriver_manager.chrome import ChromeDriverManager
 from webdriver_manager.core.os_manager import ChromeType
 from bs4 import BeautifulSoup
 
-st.set_page_config(page_title="SMART Canlı İzleme", layout="wide")
-st.title("🔴 SMART: Canlı Bot İzleme ve Analiz")
+st.set_page_config(page_title="SMART Force Submit", layout="wide")
+st.title("🔴 SMART: Zorla Gönderim ve Canlı Takip")
 
 # --- Test Sekansı ---
 TEST_SEQUENCE = "MKLKGNMNTSAQNQSQSQPPRKTNEHIQVYVRVRPLNRREKCIHSTEIVEVVSHKEIVARHSLESKLTKKFTFDRTFGPESKQVDVYAAVVGPLIEEVLSGYNCTVFAYGQTGTGKTHTMVGNECAELKSSWEDDSDIGIIPRALCHLFDELRMMELEFSMRISYLELYNEELFDLLSTDDSTKIRIFDDSTKKGSVIIQGLEEIPVHSKDDVYKLLEKGKERRRTASTLMNAQSSRSHTVFSIVVHIKENGIDGEEMLKIGKLNLVDLAGSENVSKAGNEKGVRVRETVNINQSLLTLGRVITALVERTPHIPYRESKLTRLLQESLGGRTKTSIIATISPGHKDIEETLSTLEYAHRAKNIQNKPEVNQKLTKKTVLKEYTEEIDKLKRDLMAARDKNGVYLATETYNEMTLKMDSQTRELNEKVHLLKALKDELASKEKIFNEVSLNLIEKTAELQQKDNRLRSTKGELIETKKVLKNTKRRYKEKKVLLESHAKTEEVLKDQATQILEVADIATKDTEALHETIDRRKDVDVKIQTACERFTERMNENFDQMDETLKQYEGKQISLTRCMDEELTKTSSVQSKLIDATSEQIKSIKQILDSYETSMSSMTENLCSTLTNTGQQQNTSIINFLKQLKEKELQFKTQIKENLEAIECTNEQQQIALSGMRDSIKEKLEESNTKLQQHTKRIQTEMDAIKQKTLENSQELQKISTNLTEQRTLVEEEQKLLEDFQNKMQELHKKHTACSNNINTNVETLEKAQQFVTTQLEGSSKLQQVFLEKNAKALENNCLLVDKLRDQIELHIDQNVAKCSTLTIQLDNKVQETSKALESQIVIADQHYTQTTETLKVYGPQVKRICSERREQHNGKTDLILNSLQNHVKQTVENVSIIKGFNCSLQQKLKDYSKVYKEQMQSCAQDVEIFRKSEIKTYTATGATPSKKDFKYPRVLAATSPHSNIVKRFRQENDWSDLDMTIPLDEESETDIENSISDTETILNSTPVETEIVPPKRNSYVTQRKSDRNSNLLKVPPQSNSRSGSPAGSISPRKGSSRTNSPAYLKQNKENITT"
 
-# --- Driver Ayarları ---
 def get_driver():
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
@@ -37,170 +35,148 @@ def get_driver():
         st.error(f"Driver hatası: {e}")
         return None
 
-# --- Yardımcı: Loglama ve Görüntüleme ---
-def update_status(log_placeholder, img_placeholder, message, driver=None, step_name="step"):
-    # Log Yaz
+def update_monitor(log_box, img_box, message, driver, img_name_suffix):
+    """Hem log yazar hem de o anki ekran görüntüsünü yeniler"""
     now = datetime.datetime.now().strftime("%H:%M:%S")
-    log_placeholder.markdown(f"`[{now}]` {message}")
+    log_box.markdown(f"`[{now}]` {message}")
     
-    # Fotoğraf Çek ve Göster
     if driver:
-        filename = f"{step_name}.png"
+        # Benzersiz dosya adı oluştur ki Streamlit cache'e takılmasın
+        filename = f"screenshot_{img_name_suffix}_{int(time.time())}.png"
         driver.save_screenshot(filename)
-        if os.path.exists(filename):
-            img_placeholder.image(filename, caption=f"Bot Gözü: {step_name}", use_column_width=True)
+        img_box.image(filename, caption=f"Bot Gözünden: {message}", use_container_width=True)
+        
+        # Temizlik (Opsiyonel)
+        # os.remove(filename) 
 
-# --- ANA UYGULAMA ---
-if st.button("🔴 CANLI YAYINI BAŞLAT"):
+if st.button("🔴 CANLI ANALİZİ BAŞLAT (FORCE MODE)"):
     driver = get_driver()
-    
     if driver:
-        # Ekranı İkiye Böl
+        # Ekran Düzeni
         col_log, col_img = st.columns([1, 1])
-        
         with col_log:
-            st.subheader("📜 Sistem Logları")
-            log_box = st.empty() # Dinamik log alanı
-            
+            st.subheader("📜 Canlı Loglar")
+            log_box = st.empty()
         with col_img:
-            st.subheader("👀 Bot Gözünden")
-            img_box = st.empty() # Dinamik resim alanı
+            st.subheader("👀 Anlık Ekran")
+            img_box = st.empty()
 
-        # --- ADIM 1: GİRİŞ ---
-        update_status(log_box, img_box, "Siteye bağlanılıyor...", driver, "1_init")
+        # --- 1. GİRİŞ ---
+        update_monitor(log_box, img_box, "Siteye gidiliyor...", driver, "1_init")
         driver.get("https://smart.embl-heidelberg.de/")
-        time.sleep(2)
         
-        # --- ADIM 2: MOD KONTROLÜ ---
-        update_status(log_box, img_box, "Mod seçimi kontrol ediliyor...", driver, "2_mode_check")
+        # --- 2. MOD KONTROLÜ ---
         try:
             driver.implicitly_wait(2)
-            normal_mode_links = driver.find_elements(By.CSS_SELECTOR, "a[href*='change_mode.cgi?mode=normal']")
-            if normal_mode_links:
-                update_status(log_box, img_box, "⚠️ Mod ekranı tespit edildi. Tıklanıyor...", driver, "2a_clicking_mode")
-                btn = normal_mode_links[0]
-                driver.execute_script("arguments[0].scrollIntoView();", btn)
-                btn.click()
-                time.sleep(3)
+            links = driver.find_elements(By.CSS_SELECTOR, "a[href*='change_mode.cgi?mode=normal']")
+            if links:
+                update_monitor(log_box, img_box, "Mod seçimi yapılıyor...", driver, "2_mode")
+                driver.execute_script("arguments[0].click();", links[0])
+                time.sleep(2)
         except:
             pass
         finally:
             driver.implicitly_wait(10)
 
-        # --- ADIM 3: FORM DOLDURMA ---
-        update_status(log_box, img_box, "Form dolduruluyor (Pfam + Sekans)...", driver, "3_filling_form")
+        # --- 3. FORM DOLDURMA ---
+        update_monitor(log_box, img_box, "Form dolduruluyor...", driver, "3_form")
         try:
             # Pfam Seç
             try:
-                pfam_checkbox = driver.find_element(By.NAME, "DO_PFAM")
+                pfam = driver.find_element(By.NAME, "DO_PFAM")
             except:
-                pfam_checkbox = driver.find_element(By.XPATH, "//input[parent::*[contains(text(), 'Pfam')]]")
+                pfam = driver.find_element(By.XPATH, "//input[contains(@name, 'PFAM')]")
             
-            if not pfam_checkbox.is_selected():
-                driver.execute_script("arguments[0].click();", pfam_checkbox)
+            if not pfam.is_selected():
+                driver.execute_script("arguments[0].click();", pfam)
             
             # Sekans Gir
             seq_box = driver.find_element(By.NAME, "SEQUENCE")
             seq_box.clear()
             seq_box.send_keys(TEST_SEQUENCE)
             
-            # Formun son halini çek
-            update_status(log_box, img_box, "Form hazır. Gönderim yapılıyor...", driver, "4_form_ready")
-            
         except Exception as e:
             st.error(f"Form hatası: {e}")
             driver.quit()
             st.stop()
 
-        # --- ADIM 4: GÖNDERİM ---
+        # --- 4. ZORLA GÖNDERİM (JS FORM SUBMIT) ---
+        update_monitor(log_box, img_box, "🚀 FORMU ZORLA GÖNDERİYORUM...", driver, "4_pre_submit")
         try:
-            # Enter tuşu ile gönder
-            seq_box.send_keys(Keys.ENTER)
-            time.sleep(1)
+            # Sekans kutusunun içinde bulunduğu FORMU bul ve submit() komutu ver
+            # Bu, butona tıklamaktan çok daha etkilidir.
+            driver.execute_script("arguments[0].form.submit();", seq_box)
+            
+            # Hemen 2 saniye sonra durumu kontrol et
+            time.sleep(3)
+            update_monitor(log_box, img_box, "Gönderim komutu verildi. URL değişti mi bakılıyor...", driver, "5_post_submit")
+            
         except Exception as e:
             st.error(f"Gönderim hatası: {e}")
             driver.quit()
             st.stop()
-            
-        # --- ADIM 5: BEKLEME VE TAKİP ---
-        max_wait = 60
-        start_time = time.time()
-        found_results = False
-        
-        while time.time() - start_time < max_wait:
-            elapsed = int(time.time() - start_time)
-            page_source = driver.page_source
-            
-            # Anlık durum fotosu (Her 5 saniyede bir)
-            if elapsed % 5 == 0:
-                update_status(log_box, img_box, f"⏳ Bekleniyor... ({elapsed}sn)", driver, f"5_waiting_{elapsed}")
 
-            if "Confidently predicted domains" in page_source:
-                update_status(log_box, img_box, "✅ SONUÇ SAYFASI YAKALANDI!", driver, "6_result_page")
-                found_results = True
+        # --- 5. BEKLEME DÖNGÜSÜ ---
+        start_time = time.time()
+        found = False
+        
+        while time.time() - start_time < 60:
+            elapsed = int(time.time() - start_time)
+            src = driver.page_source
+            
+            # Her 5 saniyede bir ekranı güncelle
+            if elapsed % 3 == 0:
+                update_monitor(log_box, img_box, f"⏳ Bekleniyor... ({elapsed}sn)", driver, f"6_wait_{elapsed}")
+
+            # Başarı Durumu
+            if "Confidently predicted domains" in src:
+                update_monitor(log_box, img_box, "✅ SONUÇ SAYFASI YÜKLENDİ!", driver, "7_success")
+                found = True
                 break
             
-            if "No domains found" in page_source:
-                update_status(log_box, img_box, "⚠️ Sonuç sayfası geldi ancak domain yok.", driver, "6_empty_result")
-                found_results = True
+            # Boş Sonuç
+            if "No domains found" in src:
+                update_monitor(log_box, img_box, "⚠️ Sonuç geldi ama domain yok.", driver, "7_empty")
+                found = True
                 break
             
             time.sleep(1)
 
-        # --- ADIM 6: DERİN PARSE (DETAILED DEBUG) ---
-        if found_results:
-            st.divider()
-            st.info("🔍 DETAYLI TABLO ANALİZİ BAŞLIYOR")
-            
+        # --- 6. SONUÇ ÇIKTI ---
+        if found:
+            st.success("İşlem tamamlandı, tablo aranıyor...")
             soup = BeautifulSoup(driver.page_source, 'html.parser')
             tables = soup.find_all("table")
             
-            st.write(f"Sayfada toplam **{len(tables)}** adet tablo bulundu.")
+            target = None
+            for tbl in tables:
+                headers = [th.get_text(strip=True) for th in tbl.find_all("th")]
+                if "Feature" in headers:
+                    target = tbl
+                    break
             
-            target_table = None
-            
-            # Tüm tabloları gez ve içeriklerini göster (Debug için kritik!)
-            for i, table in enumerate(tables):
-                headers = [th.get_text(strip=True) for th in table.find_all("th")]
-                st.text(f"Tablo #{i} Başlıkları: {headers}")
+            if target:
+                rows = target.find_all("tr")[1:]
+                data = []
+                for r in rows:
+                    c = r.find_all("td")
+                    if len(c) >= 3 and c[1].get_text(strip=True).isdigit():
+                        f_name = c[0].get_text(strip=True)
+                        if c[0].find('a'): f_name = c[0].find('a').get_text(strip=True)
+                        data.append({
+                            "Feature": f_name,
+                            "Start": c[1].get_text(strip=True),
+                            "End": c[2].get_text(strip=True),
+                            "E-value": c[3].get_text(strip=True) if len(c)>3 else "-"
+                        })
                 
-                # Hedef tablo mu?
-                if "Feature" in headers and "Start" in headers:
-                    target_table = table
-                    st.success(f"🎯 HEDEF TABLO BULUNDU: Tablo #{i}")
-                    
-                    # Tablo içeriğini satır satır basalım ki hatayı görelim
-                    rows = table.find_all("tr")[1:]
-                    st.markdown("### Tablo Ham Verisi:")
-                    parsed_data = []
-                    
-                    for row_idx, row in enumerate(rows):
-                        cols = row.find_all("td")
-                        col_texts = [td.get_text(strip=True) for td in cols]
-                        st.code(f"Satır {row_idx}: {col_texts}") # Burası hatayı gösterecek
-                        
-                        if len(cols) >= 3:
-                            start_val = col_texts[1]
-                            # Sayı kontrolü
-                            if start_val.isdigit():
-                                parsed_data.append(col_texts)
-                            else:
-                                st.warning(f"⚠️ Satır {row_idx} atlandı çünkü 'Start' değeri ({start_val}) sayı değil.")
-                    
-                    if parsed_data:
-                        df = pd.DataFrame(parsed_data, columns=["Feature", "Start", "End", "E-value", "...", "..."][:len(parsed_data[0])])
-                        st.dataframe(df)
-                    else:
-                        st.error("Tablo bulundu ama geçerli veri satırı çıkarılamadı.")
-
-            # Eğer hedef tablo bulunamadıysa HTML'i dök
-            if not target_table:
-                st.error("❌ Hedef başlıkları ('Feature', 'Start') içeren tablo bulunamadı.")
-                with st.expander("Sayfa HTML Kaynağı (İnceleme İçin)"):
-                    st.code(driver.page_source, language='html')
-
+                if data:
+                    st.dataframe(pd.DataFrame(data))
+                else:
+                    st.warning("Tablo boş.")
+            else:
+                st.error("Tablo bulunamadı.")
         else:
-            st.error("❌ Zaman aşımı! Sonuç sayfası gelmedi.")
-            update_status(log_box, img_box, "Zaman aşımı hatası.", driver, "99_timeout")
-
+            st.error("❌ Süre doldu. Sayfa hala değişmediyse SMART sunucusu yanıt vermiyor demektir.")
+        
         driver.quit()
