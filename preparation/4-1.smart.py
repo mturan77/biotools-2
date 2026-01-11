@@ -8,8 +8,8 @@ from selenium.webdriver.common.by import By
 from webdriver_manager.chrome import ChromeDriverManager
 from webdriver_manager.core.os_manager import ChromeType
 
-st.set_page_config(page_title="SMART Buton Avcısı v3", layout="wide")
-st.title("🎯 SMART: Hedef - Ortadaki Büyük Buton")
+st.set_page_config(page_title="SMART Final Çözüm", layout="wide")
+st.title("🎯 SMART: Nihai Çözüm (HTML Analizli)")
 
 def get_driver():
     chrome_options = Options()
@@ -29,7 +29,7 @@ def get_driver():
         st.error(f"Driver hatası: {e}")
         return None
 
-if st.button("Testi Başlat (v3)"):
+if st.button("Final Testi Başlat"):
     driver = get_driver()
     if driver:
         log_col, img_col = st.columns([1, 1])
@@ -39,79 +39,66 @@ if st.button("Testi Başlat (v3)"):
             driver.get("https://smart.embl-heidelberg.de/")
             time.sleep(3)
             
-            # --- YÖNTEM: Görsel (Image) Üzerinden Gitmek ---
-            # O buton büyük ihtimalle bir resim ve 'src' özelliğinde veya 'alt' özelliğinde ipucu var.
-            st.write("🔍 Ortadaki 'Normal Mode' Görsel Butonu aranıyor...")
+            st.info("2. Ortadaki büyük 'Normal Mode' butonu (linki) aranıyor...")
             
-            found_button = None
+            # --- HTML ANALİZİNE GÖRE HEDEFLEME ---
+            # Hedefimiz: <a class="btn..." href="change_mode.cgi?mode=normal">Normal mode</a>
             
-            # Strateji A: Resmin alt yazısında (alt text) "Normal" aramak
             try:
-                # Sayfadaki tüm resimleri tara
-                images = driver.find_elements(By.TAG_NAME, "img")
-                for img in images:
-                    alt_text = img.get_attribute("alt")
-                    src_text = img.get_attribute("src")
+                # 1. CSS Selector ile bulmaya çalış (En kesin yöntem)
+                # href değeri tam olarak "change_mode.cgi?mode=normal" olan 'a' etiketi
+                normal_mode_btn = driver.find_element(By.CSS_SELECTOR, "a[href='change_mode.cgi?mode=normal']")
+                
+                if normal_mode_btn:
+                    st.success("🎯 HEDEF BULUNDU! (CSS Selector ile)")
+                    st.info("3. Tıklanıyor...")
                     
-                    # Eğer resmin açıklamasında veya dosya isminde "Normal" geçiyorsa ve "mode" geçiyorsa
-                    if alt_text and "Normal" in alt_text:
-                        st.info(f"Olası buton bulundu (Alt Text): {alt_text}")
-                        # Bu resmin tıklanabilir bir link (parent a tag) içinde olup olmadığına bak
-                        parent = img.find_element(By.XPATH, "..")
-                        if parent.tag_name == 'a':
-                            found_button = parent
-                            break
+                    # Butonun görünür olduğundan emin ol (Bazen scroll gerekir)
+                    driver.execute_script("arguments[0].scrollIntoView();", normal_mode_btn)
+                    time.sleep(0.5)
+                    normal_mode_btn.click()
+                    time.sleep(5) # Sayfa geçişi için bekle
                     
-                    # Yedek plan: Dosya isminde "normal" geçiyorsa (örn: btn_normal.gif)
-                    if src_text and "normal" in src_text.lower() and not "logo" in src_text.lower():
-                         st.info(f"Olası buton bulundu (Src): {src_text}")
-                         parent = img.find_element(By.XPATH, "..")
-                         if parent.tag_name == 'a':
-                            found_button = parent
-                            break
-
-                if found_button:
-                    st.success("🎯 HEDEF KİLİTLENDİ: Ortadaki buton bulundu!")
-                    found_button.click()
-                    time.sleep(4) # Sayfa geçişi için bekle
+                    # --- SONUÇ KONTROLÜ ---
+                    # Artık "Sequence SMART" yazan o büyük butonu arıyoruz.
+                    # Bu butonun varlığı, doğru sayfada olduğumuzun kesin kanıtıdır.
+                    try:
+                        # Görseldeki "Sequence SMART" butonu
+                        seq_smart_btn = driver.find_element(By.XPATH, "//button[contains(., 'Sequence SMART')]")
+                        
+                        if seq_smart_btn:
+                            st.balloons()
+                            st.success("🎉 MÜKEMMEL! 'Sequence SMART' butonu bulundu. Giriş sayfası hazır!")
+                        else:
+                            st.warning("⚠️ Tıklama yapıldı ama 'Sequence SMART' butonu görünmüyor.")
+                    except:
+                        # Yedek kontrol: Textarea var mı?
+                        if "SEQUENCE" in driver.page_source:
+                            st.balloons()
+                            st.success("🎉 ALTERNATİF BAŞARI: Sekans giriş kutusu (Textarea) bulundu.")
+                        else:
+                            st.error("⚠️ Tıklama yapıldı ama beklenen sayfa ögeleri bulunamadı.")
+                            
                 else:
-                    st.error("❌ Resim tabanlı buton bulunamadı. CSS Selector deneniyor...")
-                    
-                    # Strateji B: CSS Selector ile ortadaki geniş kutuları hedefle
-                    # Genellikle 'smart_mode_selection' gibi ID'ler olur.
-                    # Deneme: Doğrudan URL'deki parametreyi içeren linki tekrar ama daha spesifik arayalım
-                    buttons = driver.find_elements(By.XPATH, "//a[contains(@href, 'to=NORMAL')]")
-                    # Genellikle sayfada 2 tane vardır, biri üstte biri ortada. İkincisine tıklayalım.
-                    if len(buttons) > 1:
-                        st.info(f"Sayfada {len(buttons)} adet Normal Mode linki var. Ortadakine (2.) tıklanıyor.")
-                        buttons[1].click() 
-                    elif len(buttons) == 1:
-                        buttons[0].click()
-                    else:
-                        st.error("Hiçbir buton bulunamadı.")
+                    st.error("❌ Buton CSS Selector ile bulunamadı.")
 
             except Exception as e:
-                st.error(f"Hata: {e}")
+                st.error(f"Hata oluştu: {e}")
+                st.warning("XPath ile yedek deneme yapılıyor...")
+                # Yedek Plan: XPath ile metin arama
+                try:
+                    btn_xpath = driver.find_element(By.XPATH, "//a[contains(text(), 'Normal mode') and contains(@class, 'btn-primary')]")
+                    btn_xpath.click()
+                    st.success("✅ XPath ile bulundu ve tıklandı.")
+                    time.sleep(4)
+                except:
+                    st.error("❌ XPath denemesi de başarısız.")
 
-            # --- SONUÇ KONTROLÜ ---
-            driver.save_screenshot("step3_result.png")
-            
-            # Artık "sequence" kelimesine güvenmiyoruz, doğrudan KUTUYU arıyoruz.
-            try:
-                # Sequence giriş kutusunun 'name' özelliği genellikle 'SEQUENCE' olur.
-                input_box = driver.find_element(By.NAME, "SEQUENCE")
-                if input_box:
-                    st.balloons()
-                    st.success("🎉 MÜKEMMEL! Sekans giriş kutusu (Textarea) bulundu. Artık hazırsın.")
-            except:
-                st.warning("⚠️ Tıklama yaptık ama hala giriş kutusunu (textarea) göremiyorum.")
-                # HTML Dump (Son çare)
-                with st.expander("Sayfa HTML Kaynağı"):
-                    st.code(driver.page_source, language='html')
+            driver.save_screenshot("final_result.png")
 
         with img_col:
-            st.subheader("Son Görüntü")
-            if os.path.exists("step3_result.png"):
-                st.image("step3_result.png", caption="Tıklama Sonrası Ekran")
+            st.subheader("Sonuç Ekranı")
+            if os.path.exists("final_result.png"):
+                st.image("final_result.png", caption="Tıklama Sonrası Görüntü (Giriş Sayfası Olmalı)")
                 
         driver.quit()
