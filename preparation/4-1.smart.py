@@ -7,27 +7,16 @@ import io
 import time
 import urllib3
 
-# SSL Uyarılarını Gizle (verify=False kullanacağımız için terminal kirlenmesin)
+# SSL uyarılarını kapat
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# --- Sayfa Ayarları ---
-st.set_page_config(page_title="SMART Domain Analizörü", layout="wide")
+st.set_page_config(page_title="SMART Debugger", layout="wide")
+st.title("🧬 SMART Analizörü - Detaylı Log Modu")
 
-st.title("🧬 SMART Protein Domain Analizörü")
-st.markdown("""
-Bu araç, yüklediğiniz **FASTA (.fa)** dosyasındaki protein sekanslarını alır, 
-**SMART** veritabanında (Pfam dahil) taratır ve **"Confidently predicted domains"** tablosunu Excel formatına dönüştürür.
-""")
+# --- Yardımcı Fonksiyonlar ---
 
-# --- Yan Fonksiyonlar ---
-
-def query_smart(sequence, protein_id):
-    """
-    SMART sunucusuna istek atar ve HTML içeriğini döndürür.
-    SSL doğrulaması devre dışı bırakılmıştır.
-    """
+def query_smart_debug(sequence, protein_id):
     url = "https://smart.embl-heidelberg.de/smart/show_motifs.pl"
-    
     payload = {
         'SEQUENCE': sequence,
         'DO_PFAM': 'DO_PFAM',
@@ -37,47 +26,52 @@ def query_smart(sequence, protein_id):
     }
     
     try:
-        time.sleep(1.0) # Sunucuya nazik davranmak için bekleme
-        
-        # DÜZELTME BURADA YAPILDI: verify=False eklendi
+        # Sunucuya istek
         response = requests.post(url, data=payload, timeout=60, verify=False)
-        
-        response.raise_for_status()
-        return response.text
+        return response
     except Exception as e:
-        # Hata mesajını biraz daha temiz gösterelim
-        st.error(f"Hata ({protein_id}): Sunucuya bağlanılamadı. (Detay: {str(e)[:100]}...)")
-        return None
+        return str(e)
 
-def parse_smart_results(html_content, protein_id):
+def parse_and_log(html_content, protein_id, log_container):
     """
-    Dönen HTML sayfasındaki 'Confidently predicted domains' tablosunu bulur.
+    Hem parse eder hem de log_container içine detay yazar.
     """
-    if not html_content:
-        return []
-
     soup = BeautifulSoup(html_content, 'html.parser')
     results = []
     
+    # Sayfa başlığını kontrol et (Hata var mı?)
+    page_title = soup.title.string if soup.title else "Başlık Yok"
+    log_container.write(f"**Sayfa Başlığı:** {page_title}")
+
+    # Hata mesajı kontrolü
+    if "Error" in html_content or "problem" in html_content.lower():
+        log_container.error("⚠️ HTML içeriğinde 'Error' veya 'problem' kelimesi tespit edildi.")
+
     tables = soup.find_all("table")
+    log_container.write(f"📄 Sayfada **{len(tables)}** adet tablo bulundu.")
+    
     target_table = None
     
-    # Doğru tabloyu bulmak için başlıkları kontrol et
-    for table in tables:
+    # Tabloları gez ve başlıklarını logla
+    for idx, table in enumerate(tables):
         headers = [th.get_text(strip=True) for th in table.find_all("th")]
-        # SMART tablosunda genellikle bu başlıklar bulunur
-        if "Feature" in headers and "Start" in headers and "End" in headers:
+        
+        # Sadece potansiyel adayları detaylı gösterelim
+        if headers:
+            # log_container.code(f"Tablo {idx} Başlıkları: {headers}") # Çok kalabalık olmasın diye kapattım
+            pass
+
+        if "Feature" in headers and ("Start" in headers or "Begin" in headers):
             target_table = table
+            log_container.success(f"✅ Hedef tablo bulundu! (Tablo Index: {idx})")
             break
-    
+            
     if target_table:
-        rows = target_table.find_all("tr")[1:] # Başlığı atla
+        rows = target_table.find_all("tr")[1:]
         for row in rows:
             cols = row.find_all("td")
             if len(cols) >= 3:
                 feature_name = cols[0].get_text(strip=True)
-                
-                # Link içindeki ismi almayı dene (bazen daha temizdir)
                 if cols[0].find('a'):
                     feature_name = cols[0].find('a').get_text(strip=True)
 
@@ -93,69 +87,71 @@ def parse_smart_results(html_content, protein_id):
                         "End": int(end_pos),
                         "E-value": e_value
                     })
-    
+    else:
+        log_container.warning("⚠️ 'Feature', 'Start', 'End' başlıklarına sahip tablo bulunamadı.")
+        # HTML'in bir kısmını göster ki sorunu anlayalım
+        with log_container.expander("Gelen HTML İçeriği (İlk 2000 karakter)"):
+            st.code(html_content[:2000], language='html')
+
     return results
 
-# --- Ana Uygulama Akışı ---
+# --- Arayüz ---
 
-uploaded_file = st.file_uploader("Protein Sekans Dosyasını Yükleyin (.fa / .fasta)", type=["fa", "fasta", "txt"])
+uploaded_file = st.file_uploader("Protein FASTA Yükle", type=["fa", "fasta", "txt"])
 
-if uploaded_file is not None:
+if uploaded_file and st.button("Loglu Analizi Başlat"):
     stringio = io.StringIO(uploaded_file.getvalue().decode("utf-8"))
     sequences = list(SeqIO.parse(stringio, "fasta"))
     
-    st.info(f"📂 Toplam **{len(sequences)}** adet sekans yüklendi.")
+    all_features = []
     
-    if st.button("Analizi Başlat"):
-        all_features = []
-        
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        # Hata sayacı
-        error_count = 0
-        
+    # Ana log alanı
+    log_area = st.container()
+    
+    with log_area:
         for i, seq_record in enumerate(sequences):
             prot_id = seq_record.id
             prot_seq = str(seq_record.seq)
             
-            status_text.text(f"İşleniyor: {prot_id} ({i+1}/{len(sequences)})")
+            # Her protein için açılır/kapanır bir kutu yapalım
+            with st.expander(f"[{i+1}/{len(sequences)}] İşleniyor: {prot_id}", expanded=False):
+                st.write(f"**Sekans Uzunluğu:** {len(prot_seq)}")
+                
+                # 1. İstek Gönder
+                response = query_smart_debug(prot_seq, prot_id)
+                
+                if isinstance(response, str): # Hata mesajı döndüyse
+                    st.error(f"Bağlantı Hatası: {response}")
+                    continue
+                
+                st.write(f"**HTTP Durum Kodu:** {response.status_code}")
+                
+                if response.status_code == 200:
+                    # 2. Parse Et ve Logla
+                    features = parse_and_log(response.text, prot_id, st)
+                    
+                    if features:
+                        st.write(f"🎉 **{len(features)}** özellik bulundu: {[f['Feature'] for f in features]}")
+                        all_features.extend(features)
+                    else:
+                        st.warning("Bu sekans için özellik çıkarılamadı.")
+                else:
+                    st.error("Sunucu 200 OK döndürmedi.")
             
-            html_result = query_smart(prot_seq, prot_id)
-            
-            if html_result:
-                features = parse_smart_results(html_result, prot_id)
-                all_features.extend(features)
-            else:
-                error_count += 1
-            
-            progress_bar.progress((i + 1) / len(sequences))
-        
-        status_text.text("✅ İşlem tamamlandı!")
-        
-        if error_count > 0:
-            st.warning(f"{error_count} adet sekans sunucu hatası nedeniyle işlenemedi.")
+            # Sunucuyu boğmamak için bekleme
+            time.sleep(1.0)
 
-        if all_features:
-            df = pd.DataFrame(all_features)
-            
-            st.subheader("📊 Sonuç Tablosu")
-            st.dataframe(df)
-            
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df.to_excel(writer, index=False, sheet_name='SMART_Results')
-            
-            processed_data = output.getvalue()
-            
-            st.download_button(
-                label="📥 Excel İndir",
-                data=processed_data,
-                file_name="smart_analiz_sonuclari.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-        else:
-            if error_count == len(sequences):
-                st.error("Hiçbir sonuç alınamadı. Lütfen internet bağlantınızı kontrol edin veya SMART sunucusunun erişilebilir olduğundan emin olun.")
-            else:
-                st.info("İşlenen proteinlerde confident domain bulunamadı.")
+    st.divider()
+    if all_features:
+        st.success("✅ Tüm işlemler bitti. Sonuçlar aşağıda.")
+        df = pd.DataFrame(all_features)
+        st.dataframe(df)
+        
+        # Excel İndir
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='SMART_Results')
+        
+        st.download_button("Excel İndir", output.getvalue(), "smart_loglu_sonuc.xlsx")
+    else:
+        st.error("Hiçbir sonuç üretilemedi. Lütfen yukarıdaki genişletilebilir logları (expander) açıp HTML içeriklerini kontrol edin.")
