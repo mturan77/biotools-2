@@ -67,7 +67,7 @@ def update_queue_display(placeholder, df):
 # --- Main App ---
 uploaded_file = st.file_uploader("Upload Protein FASTA Sequence", type=["fa", "fasta", "txt"])
 
-if uploaded_file and st.button("🚀 Start Analysis & Generate Colored Excel"):
+if uploaded_file and st.button("🚀 Start Analysis"):
     
     stringio = io.StringIO(uploaded_file.getvalue().decode("utf-8"))
     sequences = list(SeqIO.parse(stringio, "fasta"))
