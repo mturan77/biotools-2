@@ -13,24 +13,27 @@ from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from webdriver_manager.core.os_manager import ChromeType
 from Bio import SeqIO
+
+# Excel Stil Kütüphaneleri
 from openpyxl import load_workbook
+from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-# --- Page Configuration ---
-st.set_page_config(page_title="SMART Batch Processor", layout="wide", initial_sidebar_state="collapsed")
+# --- Page Config ---
+st.set_page_config(page_title="SMART Pro Analyzer", layout="wide", initial_sidebar_state="collapsed")
 
-# --- CSS: Terminal Görünümü ---
+# --- CSS ---
 st.markdown("""
 <style>
     .stApp {background-color: #f8f9fa;}
-    .block-container {padding-top: 2rem;}
+    code {font-family: 'Consolas', monospace !important; font-size: 0.8rem;}
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🧬 SMART Database: High-Throughput Domain Analysis")
-st.markdown("Automated retrieval system with strict filtering (Excluding 'Not Shown' features and repeats).")
+st.title("🧬 SMART Database: Professional Domain Analyzer")
+st.markdown("Automated retrieval with **visual grouping** in Excel output.")
 
-# --- Driver Configuration ---
+# --- Driver ---
 def get_driver():
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
@@ -44,219 +47,212 @@ def get_driver():
         service = Service(ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install())
         return webdriver.Chrome(service=service, options=chrome_options)
     except Exception as e:
-        st.error(f"Critical Driver Error: {e}")
+        st.error(f"Driver Error: {e}")
         return None
 
 # --- Helpers ---
-def log_message(message, level="INFO"):
-    timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-    icon = "ℹ️" if level == "INFO" else "✅" if level == "SUCCESS" else "⚠️" if level == "WARNING" else "❌"
-    return f"[{timestamp}] {icon} {message}"
-
 def extract_number(text):
-    """Metin içindeki sayıyı regex ile bulur. En güvenli yöntemdir."""
     match = re.search(r'\d+', text)
-    if match:
-        return int(match.group())
+    if match: return int(match.group())
     return None
 
 def update_queue_display(placeholder, df):
     placeholder.dataframe(df, use_container_width=True, hide_index=True)
 
-# --- Main Logic ---
-uploaded_file = st.file_uploader("Upload Protein FASTA Sequence (.fa, .fasta)", type=["fa", "fasta", "txt"])
+# --- Main App ---
+uploaded_file = st.file_uploader("Upload Protein FASTA Sequence", type=["fa", "fasta", "txt"])
 
-if uploaded_file and st.button("🚀 Initialize Analysis Pipeline"):
+if uploaded_file and st.button("🚀 Start Analysis & Generate Colored Excel"):
     
     stringio = io.StringIO(uploaded_file.getvalue().decode("utf-8"))
     sequences = list(SeqIO.parse(stringio, "fasta"))
     
-    col_queue, col_telemetry = st.columns([1.5, 1])
+    col_queue, col_log = st.columns([1.5, 1])
     
-    # Session Log History
-    if 'log_history' not in st.session_state:
-        st.session_state.log_history = []
-        
+    # Queue Data
     queue_data = [{"Accession ID": s.id, "Status": "QUEUED", "Domains": 0} for s in sequences]
     df_queue = pd.DataFrame(queue_data)
     
     with col_queue:
-        st.subheader("📋 Processing Queue")
-        queue_placeholder = st.empty()
-        update_queue_display(queue_placeholder, df_queue)
+        st.subheader("📋 Queue")
+        q_place = st.empty()
+        update_queue_display(q_place, df_queue)
         
-    with col_telemetry:
-        st.subheader("📟 System Telemetry")
-        # SCROLLABLE LOG CONTAINER (Sabit Yükseklik)
-        log_container = st.container(height=400)
+    with col_log:
+        st.subheader("📟 Logs")
+        log_cont = st.container(height=400)
+        log_place = st.empty()
 
-    def add_log(msg, level="INFO"):
-        formatted = log_message(msg, level)
-        st.session_state.log_history.insert(0, formatted)
-        with log_container:
-            st.code("\n".join(st.session_state.log_history), language="bash")
+    if 'logs' not in st.session_state: st.session_state.logs = []
+    st.session_state.logs = []
 
-    add_log(f"Pipeline initialized. Target sequences: {len(sequences)}", "INFO")
+    def log(msg, level="INFO"):
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        icon = "ℹ️" if level=="INFO" else "✅" if level=="SUCCESS" else "⚠️" if level=="WARNING" else "❌"
+        st.session_state.logs.insert(0, f"[{ts}] {icon} {msg}")
+        with log_cont: log_place.code("\n".join(st.session_state.logs), language="bash")
+
+    log(f"Initialized. Total sequences: {len(sequences)}", "INFO")
     
     driver = get_driver()
     all_results = []
     
     if driver:
-        add_log("Headless WebDriver connection established.", "SUCCESS")
+        log("Driver connected.", "SUCCESS")
         
         for idx, seq_record in enumerate(sequences):
             prot_id = seq_record.id
             prot_seq = str(seq_record.seq)
             
-            # Update Queue UI
             df_queue.loc[df_queue['Accession ID'] == prot_id, 'Status'] = '⏳ PROCESSING'
-            update_queue_display(queue_placeholder, df_queue)
+            update_queue_display(q_place, df_queue)
             
-            add_log(f"Processing Accession: {prot_id} ({idx+1}/{len(sequences)})", "INFO")
+            log(f"Processing: {prot_id}", "INFO")
             
             try:
                 driver.get("https://smart.embl-heidelberg.de/")
                 
-                # Mode Check
+                # Mode
                 try:
                     driver.implicitly_wait(1)
-                    mode_btn = driver.find_elements(By.CSS_SELECTOR, "a[href*='change_mode.cgi?mode=normal']")
-                    if mode_btn: driver.execute_script("arguments[0].click();", mode_btn[0])
+                    mode = driver.find_elements(By.CSS_SELECTOR, "a[href*='change_mode.cgi?mode=normal']")
+                    if mode: driver.execute_script("arguments[0].click();", mode[0])
                 except: pass
                 
-                # Pfam Check
+                # Form
                 try:
                     pfam = driver.find_element(By.XPATH, "//input[contains(@name, 'PFAM') or @name='DO_PFAM']")
                     if not pfam.is_selected(): driver.execute_script("arguments[0].click();", pfam)
                 except: pass
                 
-                # Sequence Input
                 seq_in = driver.find_element(By.NAME, "SEQUENCE")
                 seq_in.clear()
                 seq_in.send_keys(prot_seq)
-                
-                # Force Submit
                 driver.execute_script("arguments[0].form.submit();", seq_in)
                 
                 # Wait & Extract
-                wait_start = time.time()
-                features_found = False
-                valid_count = 0
+                start_t = time.time()
+                found = False
+                valid = 0
                 
-                while time.time() - wait_start < 60:
+                while time.time() - start_t < 60:
                     try:
-                        # Tablo satırlarının yüklenmesini bekle (Critical Wait)
-                        WebDriverWait(driver, 1).until(
-                            EC.presence_of_element_located((By.CSS_SELECTOR, "table.dataTable tbody tr"))
-                        )
-                        
-                        # Tüm satırları çek (Hangi tabloda olduğuna bakmaksızın)
+                        WebDriverWait(driver, 1).until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.dataTable tbody tr")))
                         rows = driver.find_elements(By.CSS_SELECTOR, "table.dataTable tbody tr")
                         
                         if len(rows) > 0 and "No data available" not in rows[0].text:
-                            
-                            # Satırları tara
                             for row in rows:
                                 cols = row.find_elements(By.TAG_NAME, "td")
-                                
-                                # --- FİLTRELEME MANTIĞI ---
-                                # 1. Sütun Sayısı Kontrolü: 
-                                # Eğer 5 veya daha fazla sütun varsa, bu "NOT shown" tablosudur (Reason sütunu vardır).
-                                # Bizim istediğimiz tabloda 4 sütun vardır (Feature, Start, End, E-value).
-                                if len(cols) >= 5: 
-                                    continue
+                                if len(cols) >= 5: continue # Skip "Not Shown" tables
                                 
                                 if len(cols) >= 3:
-                                    feat_name = cols[0].text.strip()
-                                    if not feat_name: 
-                                        try: feat_name = cols[0].find_element(By.TAG_NAME, "a").text.strip()
+                                    name = cols[0].text.strip()
+                                    if not name:
+                                        try: name = cols[0].find_element(By.TAG_NAME, "a").text.strip()
                                         except: pass
                                     
-                                    # 2. İsim Filtresi (Coiled coil vb.)
-                                    if feat_name.lower() in ["coiled coil", "low complexity"]:
-                                        continue
-                                        
-                                    start_txt = cols[1].text.strip()
-                                    end_txt = cols[2].text.strip()
-                                    e_val = cols[3].text.strip() if len(cols) > 3 else "N/A"
+                                    if name.lower() in ["coiled coil", "low complexity"]: continue
                                     
-                                    # 3. Sayısal Veri Kontrolü (Regex ile)
-                                    start_val = extract_number(start_txt)
-                                    end_val = extract_number(end_txt)
+                                    s_val = extract_number(cols[1].text)
+                                    e_val = extract_number(cols[2].text)
+                                    eval_txt = cols[3].text.strip() if len(cols)>3 else "N/A"
                                     
-                                    if start_val is not None:
+                                    if s_val is not None:
                                         all_results.append({
                                             "Protein_ID": prot_id,
-                                            "Feature": feat_name,
-                                            "Start": start_val,
-                                            "End": end_val,
-                                            "E-value": e_val
+                                            "Feature": name,
+                                            "Start": s_val,
+                                            "End": e_val,
+                                            "E-value": eval_txt
                                         })
-                                        valid_count += 1
-                            
-                            features_found = True
-                            break # While döngüsünden çık
-                            
-                        # "No domains" kontrolü
-                        if "No domains found" in driver.page_source:
-                            features_found = True
+                                        valid += 1
+                            found = True
                             break
-                            
-                    except:
-                        time.sleep(1)
+                        
+                        if "No domains found" in driver.page_source:
+                            found = True
+                            break
+                    except: time.sleep(1)
                 
-                if features_found:
+                if found:
                     df_queue.loc[df_queue['Accession ID'] == prot_id, 'Status'] = '✅ COMPLETED'
-                    df_queue.loc[df_queue['Accession ID'] == prot_id, 'Domains'] = valid_count
-                    add_log(f"Extraction successful. {valid_count} valid domains recorded.", "SUCCESS")
+                    df_queue.loc[df_queue['Accession ID'] == prot_id, 'Domains'] = valid
+                    if valid > 0: log(f"Found {valid} domains.", "SUCCESS")
+                    else: log("No domains found.", "WARNING")
                 else:
                     df_queue.loc[df_queue['Accession ID'] == prot_id, 'Status'] = '❌ TIMEOUT'
-                    add_log("Timeout awaiting results.", "ERROR")
                     
             except Exception as e:
                 df_queue.loc[df_queue['Accession ID'] == prot_id, 'Status'] = '❌ FAILED'
-                add_log(f"Runtime error: {str(e)[:50]}", "ERROR")
+                log(f"Error: {str(e)[:40]}", "ERROR")
             
-            update_queue_display(queue_placeholder, df_queue)
+            update_queue_display(q_place, df_queue)
 
         driver.quit()
-        add_log("Batch processing finished.", "SUCCESS")
-        st.success("Analysis Completed.")
+        st.success("Analysis Finished.")
         
-        # --- EXCEL EXPORT (Temiz ve Düzenli) ---
+        # --- EXCEL GÜZELLEŞTİRME VE RENKLENDİRME ---
         if all_results:
             df_final = pd.DataFrame(all_results)
-            
-            # Sıralama: Önce Protein ID, Sonra Start Pozisyonu
+            # Sıralama
             df_final = df_final.sort_values(by=["Protein_ID", "Start"])
             
-            # Excel Oluşturma
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 df_final.to_excel(writer, index=False, sheet_name='SMART_Domains')
                 
-                # Sütun Genişliklerini Ayarla
-                worksheet = writer.sheets['SMART_Domains']
-                for column in worksheet.columns:
-                    max_length = 0
-                    column = [cell for cell in column]
-                    for cell in column:
-                        try:
-                            if len(str(cell.value)) > max_length:
-                                max_length = len(str(cell.value))
-                        except: pass
-                    adjusted_width = (max_length + 2)
-                    worksheet.column_dimensions[get_column_letter(column[0].column)].width = adjusted_width
+                ws = writer.sheets['SMART_Domains']
+                
+                # Stiller
+                # 1. Başlık Stili
+                header_font = Font(bold=True, color="FFFFFF")
+                header_fill = PatternFill(start_color="4F81BD", end_color="4F81BD", fill_type="solid") # Koyu Mavi
+                
+                for cell in ws[1]:
+                    cell.font = header_font
+                    cell.fill = header_fill
+                    cell.alignment = Alignment(horizontal="center")
+                
+                # 2. Renk Tanımları (Grup Ayrımı İçin)
+                fill_color_1 = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid") # Beyaz
+                fill_color_2 = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid") # Açık Yeşil/Gri
+                
+                current_protein = None
+                toggle_color = True # True: Beyaz, False: Renkli
+                
+                # 3. Satır Satır Gez ve Renklendir
+                # min_row=2 çünkü başlığı atlıyoruz
+                for row in ws.iter_rows(min_row=2, max_col=5):
+                    protein_cell = row[0] # Protein_ID sütunu
+                    
+                    # Eğer protein ID değiştiyse rengi değiştir (Switch)
+                    if protein_cell.value != current_protein:
+                        current_protein = protein_cell.value
+                        toggle_color = not toggle_color
+                    
+                    # Seçili rengi o satırdaki tüm hücrelere uygula
+                    current_fill = fill_color_1 if toggle_color else fill_color_2
+                    
+                    for cell in row:
+                        cell.fill = current_fill
+                        cell.border = Border(left=Side(style='thin', color="D3D3D3"), 
+                                             right=Side(style='thin', color="D3D3D3"),
+                                             bottom=Side(style='thin', color="D3D3D3"))
+
+                # 4. Sütun Genişliklerini Otomatik Ayarla
+                for column_cells in ws.columns:
+                    length = max(len(str(cell.value)) for cell in column_cells)
+                    ws.column_dimensions[get_column_letter(column_cells[0].column)].width = length + 4
 
             st.divider()
-            st.subheader("📊 Final Dataset")
+            st.subheader("📊 Organized & Colored Dataset")
             st.dataframe(df_final, use_container_width=True)
             
             st.download_button(
-                label="📥 Download Organized Excel (.xlsx)",
+                label="📥 Download Colored Excel (.xlsx)",
                 data=output.getvalue(),
-                file_name="SMART_Analysis_Final.xlsx",
+                file_name="SMART_Domains_Colored.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         else:
-            st.warning("No domains detected.")
+            st.warning("No data.")
