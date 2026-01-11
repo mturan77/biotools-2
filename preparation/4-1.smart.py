@@ -64,26 +64,14 @@ def update_queue_display(placeholder, df):
 # --- SIDEBAR TASARIMI ---
 with st.sidebar:
     st.header("1. Input Configuration")
-    
-    # Dosya Yükleme Alanı
     uploaded_file = st.file_uploader("Upload Source File (FASTA)", type=["fa", "fasta", "txt"])
-    
     st.divider()
-    
-    # Bilgilendirme Kutusu
-    st.info("""
-    **ℹ️ Protocol:**
-    1. Upload FASTA file.
-    2. System auto-detects species prefix.
-    3. Results are filtered & colored.
-    """)
-    
-    # Başlat Butonu
+    st.info("**ℹ️ Protocol:**\n1. Upload FASTA file.\n2. System detects species prefix.\n3. Results are distinctively colored.")
     start_btn = st.button("🚀 Initialize Analysis Pipeline", type="primary", use_container_width=True)
 
 # --- ANA EKRAN TASARIMI ---
 st.title("🧬 SMART Database: Genomic Data Acquisition Protocol")
-st.markdown("Automated High-Throughput Retrieval System with **Visual Excel Output**.")
+st.markdown("Automated High-Throughput Retrieval System with **Multi-Color Grouping**.")
 st.divider()
 
 # --- Main Logic ---
@@ -94,17 +82,15 @@ if start_btn and uploaded_file:
     stringio = io.StringIO(uploaded_file.getvalue().decode("utf-8"))
     sequences = list(SeqIO.parse(stringio, "fasta"))
     
-    # --- DOSYA İSMİ İÇİN PREFIX BELİRLEME ---
-    # İlk sekansın ID'sinin ilk 4 harfini al (Örn: Mdom00864 -> Mdom)
+    # Prefix Belirleme
     file_prefix = "SMART"
     if len(sequences) > 0:
         first_id = sequences[0].id
         file_prefix = first_id[:4] if len(first_id) >= 4 else first_id
     
-    # 2. Ekran Düzeni (Queue ve Log Yan Yana)
+    # 2. Ekran Düzeni
     col_queue, col_log = st.columns([1.5, 1])
     
-    # Queue Data
     queue_data = [{"Accession ID": s.id, "Status": "QUEUED", "Domains": 0} for s in sequences]
     df_queue = pd.DataFrame(queue_data)
     
@@ -115,7 +101,7 @@ if start_btn and uploaded_file:
         
     with col_log:
         st.subheader(f"📟 System Telemetry ({file_prefix})")
-        log_cont = st.container(height=450) # Log kutusu yüksekliği
+        log_cont = st.container(height=450)
         with log_cont:
             log_place = st.empty()
 
@@ -126,11 +112,9 @@ if start_btn and uploaded_file:
         ts = datetime.datetime.now().strftime("%H:%M:%S")
         icon = "ℹ️" if level=="INFO" else "✅" if level=="SUCCESS" else "⚠️" if level=="WARNING" else "❌"
         st.session_state.logs.insert(0, f"[{ts}] {icon} {msg}")
-        # Logları güncelle
         log_place.code("\n".join(st.session_state.logs), language="bash")
 
-    log(f"Pipeline initialized for species tag: {file_prefix}", "INFO")
-    log(f"Target sequences: {len(sequences)}", "INFO")
+    log(f"Pipeline initialized. Target sequences: {len(sequences)}", "INFO")
     
     driver = get_driver()
     all_results = []
@@ -230,7 +214,7 @@ if start_btn and uploaded_file:
         driver.quit()
         st.success(f"Analysis Protocol Completed for {file_prefix}.")
         
-        # --- EXCEL GENERATION ---
+        # --- ÇOK RENKLİ EXCEL OLUŞTURMA ---
         if all_results:
             df_final = pd.DataFrame(all_results)
             df_final = df_final.sort_values(by=["Protein_ID", "Start"])
@@ -238,37 +222,42 @@ if start_btn and uploaded_file:
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 df_final.to_excel(writer, index=False, sheet_name='SMART_Domains')
-                
                 ws = writer.sheets['SMART_Domains']
                 
-                # Styles
+                # 1. Başlık Stili
                 header_font = Font(bold=True, color="FFFFFF")
-                header_fill = PatternFill(start_color="4F81BD", end_color="4F81BD", fill_type="solid")
-                
+                header_fill = PatternFill(start_color="203764", end_color="203764", fill_type="solid") # Koyu Lacivert
                 for cell in ws[1]:
                     cell.font = header_font
                     cell.fill = header_fill
                     cell.alignment = Alignment(horizontal="center")
                 
-                fill_color_1 = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
-                fill_color_2 = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
+                # 2. Pastel Renk Paleti (7 Farklı Renk)
+                # Açık Yeşil, Açık Mavi, Açık Turuncu, Açık Sarı, Açık Mor, Açık Gri, Açık Turkuaz
+                hex_colors = ["E2EFDA", "DDEBF7", "FCE4D6", "FFF2CC", "E4DFEC", "EDEDED", "D0E0E3"]
+                fills = [PatternFill(start_color=c, end_color=c, fill_type="solid") for c in hex_colors]
                 
                 current_protein = None
-                toggle_color = True
+                color_index = 0
                 
+                # 3. Satırları Boya (Döngüsel Renk Mantığı)
                 for row in ws.iter_rows(min_row=2, max_col=5):
                     protein_cell = row[0]
+                    
+                    # Eğer protein değiştiyse bir sonraki renge geç
                     if protein_cell.value != current_protein:
                         current_protein = protein_cell.value
-                        toggle_color = not toggle_color
+                        color_index = (color_index + 1) % len(fills) # Listeyi başa sardırarak döner
                     
-                    current_fill = fill_color_1 if toggle_color else fill_color_2
+                    current_fill = fills[color_index]
+                    
                     for cell in row:
                         cell.fill = current_fill
-                        cell.border = Border(left=Side(style='thin', color="D3D3D3"), 
-                                             right=Side(style='thin', color="D3D3D3"),
-                                             bottom=Side(style='thin', color="D3D3D3"))
+                        cell.border = Border(left=Side(style='thin', color="BFBFBF"), 
+                                             right=Side(style='thin', color="BFBFBF"),
+                                             bottom=Side(style='thin', color="BFBFBF"))
 
+                # 4. Sütun Genişliği
                 for column_cells in ws.columns:
                     length = max(len(str(cell.value)) for cell in column_cells)
                     ws.column_dimensions[get_column_letter(column_cells[0].column)].width = length + 4
@@ -277,11 +266,10 @@ if start_btn and uploaded_file:
             st.subheader("📊 Final Organized Dataset")
             st.dataframe(df_final, use_container_width=True)
             
-            # Dinamik Dosya İsmi Oluşturma
             final_filename = f"{file_prefix}_SMART_Results.xlsx"
             
             st.download_button(
-                label=f"📥 Download Report ({final_filename})",
+                label=f"📥 Download Multi-Color Report ({final_filename})",
                 data=output.getvalue(),
                 file_name=final_filename,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -293,5 +281,4 @@ if start_btn and uploaded_file:
 elif start_btn and not uploaded_file:
     st.sidebar.error("⚠️ Please upload a FASTA file first.")
 else:
-    # Boş ekran (Başlangıç durumu)
     st.info("👈 Please upload a protein FASTA file from the sidebar to begin the protocol.")
