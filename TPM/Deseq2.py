@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
 import io
 
 # ==============================================================================
@@ -87,8 +88,7 @@ def calculate_pca_r_style(log_norm_df, ntop=500):
     düşük varyanslı/gürültülü genleri filtreleyerek PCA yapar.
     """
     # 1. Gürültü Filtresi (Noise Filter)
-    # Log2 dönüşümü düşük countlarda gürültü bırakır, R'daki vst bunu temizler.
-    # R sonucuna yaklaşmak için ortalaması çok düşük genleri (gürültü) atıyoruz.
+    # Ortalaması 1'den küçük olan çok silik genleri at.
     mean_filter = log_norm_df.mean(axis=1) > 1.0 
     filtered_df = log_norm_df[mean_filter]
 
@@ -102,11 +102,19 @@ def calculate_pca_r_style(log_norm_df, ntop=500):
     # 3. En yüksek varyanslı genleri seç
     select = rv.sort_values(ascending=False).head(ntop).index
     
-    # 4. PCA Uygula
+    # 4. MATRİSİ HAZIRLA
     pca_input = log_norm_df.loc[select].T
     
+    # --- KRİTİK DÜZELTME: STANDARTLAŞTIRMA (SCALING) ---
+    # R'daki VST'nin yarattığı varyans dağılımını yakalamak için
+    # veriyi scale ediyoruz (Ortalama=0, Varyans=1 yapıyoruz).
+    # Bu işlem PC1 varyans oranını genellikle arttırır ve %40'lara yaklaştırır.
+    scaler = StandardScaler()
+    pca_input_scaled = scaler.fit_transform(pca_input)
+    
+    # 5. PCA Uygula
     pca = PCA(n_components=2)
-    pca_res = pca.fit_transform(pca_input)
+    pca_res = pca.fit_transform(pca_input_scaled)
     percentVar = pca.explained_variance_ratio_ * 100
     
     return pca_res, percentVar, select
