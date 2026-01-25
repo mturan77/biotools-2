@@ -13,7 +13,7 @@ import io
 st.set_page_config(page_title="RNA-Seq Analizi (PyDESeq2)", layout="wide")
 
 st.title("🧬 RNA-Seq Analiz Paneli (Python versiyonu)")
-st.markdown("R DESeq2 mantığının Python (PyDESeq2) ve Streamlit ile uyarlanmış halidir.")
+st.markdown("R DESeq2 mantığının Python (PyDESeq2) ve Streamlit ile uyarlanmış halidir. Gerekli olan dosyalar: sample.csv ve gen_listesi.txt")
 
 # --- 1. SIDEBAR: Dosya Yükleme ve Ayarlar ---
 with st.sidebar:
