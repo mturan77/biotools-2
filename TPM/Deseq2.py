@@ -12,6 +12,65 @@ import io
 st.set_page_config(page_title="RNA-Seq Full Analiz", layout="wide")
 st.title("🧬 RNA-Seq Analiz Hattı: HISAT & SALMON (Full Çıktı)")
 
+# --- 0. MANUEL & BİLGİLENDİRME ---
+with st.expander("ℹ️ NASIL KULLANILIR? (Dosya İsimleri ve Formatlar)"):
+    st.markdown("""
+    ### Kullanılması Gereken Dosya Formatları
+    
+    Bu uygulama, elinizdeki R kodunun mantığıyla birebir çalışır. Aşağıdaki dosyaları ilgili kutucuklara yükleyiniz.
+
+    1.  **HISAT Counts Dosyası:**
+        * Örnek Dosya Adı: `HISAT_Raw_Counts_Matrix_Verbose.csv`
+        * İçerik: Satırlarda Genler, Sütunlarda Örnekler (Ham Sayılar).
+
+    2.  **SALMON Counts Dosyası:**
+        * Örnek Dosya Adı: `SALMON_Raw_Counts_Matrix.csv`
+        * İçerik: HISAT ile aynı formatta.
+
+    3.  **Samples (Metadata) Dosyası:**
+        * Örnek Dosya Adı: `samples.csv`
+        * **Önemli:** İlk sütunda örnek isimleri (SRR...), ikinci sütunda veya `condition` adında bir sütunda gruplar (Control, Treatment vb.) olmalı.
+
+    4.  **Gen Listesi (Opsiyonel):**
+        * Örnek Dosya Adı: `gen_listesi.txt`
+        * İçerik: Alt alta gen isimleri.
+    """)
+    st.markdown("""
+    ### 1. Dosya Formatları Nasıl Olmalı?
+    
+    **A) Counts Matrix (Sayım Matrisi):**
+    * **Format:** `.csv` (Virgül ile ayrılmış)
+    * **Satırlar:** Gen İsimleri (GeneID)
+    * **Sütunlar:** Örnek İsimleri (SampleID)
+    * *Değerler:* Ham okuma sayıları (Raw integers). Normalize edilmiş veri yüklemeyin!
+    
+    | | SRR101 | SRR102 | SRR103 |
+    |---|---|---|---|
+    | **GeneA** | 150 | 160 | 0 |
+    | **GeneB** | 2000 | 2100 | 1950 |
+
+    **B) Metadata / Samples (Örnek Bilgileri):**
+    * **Format:** `.csv`
+    * **Satırlar:** Örnek İsimleri (Counts dosyasındaki sütunlarla BİREBİR AYNI olmalı)
+    * **Sütun:** `condition` adında bir sütun olmalı (Control, Treatment vb. yazar).
+    
+    | | condition | batch |
+    |---|---|---|
+    | **SRR101** | Control | 1 |
+    | **SRR102** | Treatment | 1 |
+    
+    ---
+    ### 2. Parametreler Ne İşe Yarar?
+    * **P-adj Cutoff (0.05):** İstatistiksel olarak ne kadar emin olmak istiyorsunuz? Genelde 0.05 (veya %5 hata payı) kullanılır.
+    * **Log2 Fold Change (LFC):** Gen ifadesinin kat değişim eşiği. `1` demek, genin ifadesi 2 katına çıkmış (veya yarıya inmiş) demektir.
+    * **Min Count:** Çok az okunan (örneğin toplamda 10'dan az okunan) genleri atarak analizi hızlandırır ve gürültüyü azaltır.
+    """)
+
+
+
+
+
+
 # --- 1. SIDEBAR ---
 with st.sidebar:
     st.header("1. Veri Dosyaları")
