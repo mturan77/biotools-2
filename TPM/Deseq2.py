@@ -9,8 +9,8 @@ from sklearn.decomposition import PCA
 import io
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="RNA-Seq Multi-Mode", layout="wide")
-st.title("🧬 RNA-Seq Analiz Hattı (Standart & Özel Liste Modlu)")
+st.set_page_config(page_title="RNA-Seq Final", layout="wide")
+st.title("🧬 RNA-Seq Analiz Hattı (R Uyumlu Final)")
 
 # --- OTURUM YÖNETİMİ ---
 if 'hisat_dds' not in st.session_state: st.session_state.hisat_dds = None
@@ -21,6 +21,7 @@ if 'design_col' not in st.session_state: st.session_state.design_col = None
 # --- HQ İNDİRME FONKSİYONLARI ---
 def save_plot_high_quality(fig, format="png"):
     buf = io.BytesIO()
+    # dpi=300: Baskı kalitesi
     fig.savefig(buf, format=format, bbox_inches="tight", dpi=300)
     buf.seek(0)
     return buf
@@ -56,7 +57,7 @@ def run_deseq_fit(counts_df, samples_df, design_col, ref_level, min_cnt):
     # Transpose
     counts_T = counts_df.T 
     
-    # Filtreleme
+    # Filtreleme (R: rowSums >= 10)
     genes_keep = counts_T.columns[counts_T.sum(axis=0) >= min_cnt]
     counts_T = counts_T[genes_keep]
     
@@ -70,11 +71,11 @@ def run_deseq_fit(counts_df, samples_df, design_col, ref_level, min_cnt):
         )
         inference.deseq2()
         
-        # VST ZORLAMA (Varyans doğruluğu için)
+        # VST ZORLAMA
         try:
             inference.vst() 
-        except Exception as vst_err:
-            st.warning(f"VST başarısız ({vst_err}), mecburen Log dönüşümü yapılıyor.")
+        except:
+            st.warning("VST yapılamadı, Log kullanılıyor.")
         
         return inference, None
     except Exception as e:
@@ -197,16 +198,18 @@ if st.session_state.processed:
                     if user_gene_list:
                         pca_mode_opts.append(f"Özel Liste ({len(user_gene_list)} Gen)")
                     
-                    pca_mode = st.radio("PCA Hangi Genlerle Çizilsin?", pca_mode_opts, key=f"pca_rad_{method_name}")
+                    pca_mode = st.radio("PCA Gen Seçimi:", pca_mode_opts, key=f"pca_rad_{method_name}")
                     
-                    # Yön Çevirme
+                    # Yön Çevirme (Varsayılan olarak Y'yi çevirdik ki R ile uyuşsun)
                     c_inv1, c_inv2 = st.columns(2)
-                    inv_x = c_inv1.checkbox("X Ters Çevir", key=f"ix_{method_name}")
-                    inv_y = c_inv2.checkbox("Y Ters Çevir", key=f"iy_{method_name}")
+                    inv_x = c_inv1.checkbox("X Ters Çevir", value=False, key=f"ix_{method_name}")
+                    inv_y = c_inv2.checkbox("Y Ters Çevir", value=True, key=f"iy_{method_name}")
                     
                     # Veriyi Hazırla
                     if "Standart" in pca_mode:
-                        variances = norm_counts.var(axis=0)
+                        # !!! KRİTİK NOKTA: R (Sample Variance) vs Python (Population Variance) !!!
+                        # ddof=1 kullanarak R'ın 'rowVars' fonksiyonunu taklit ediyoruz.
+                        variances = norm_counts.var(axis=0, ddof=1)
                         genes_for_pca = variances.sort_values(ascending=False).head(500).index
                         plot_title = f"PCA (Top 500 Genes) - {method_name}"
                     else:
@@ -226,8 +229,8 @@ if st.session_state.processed:
                     pca_df = pd.DataFrame(pca_res, columns=["PC1", "PC2"], index=norm_counts.index)
                     pca_df['condition'] = metadata[design_col]
                     
-                    # Çizim
-                    fig_pca, ax = plt.subplots(figsize=(5, 4)) 
+                    # Ekran için Küçük, İndirme için Büyük
+                    fig_pca, ax = plt.subplots(figsize=(6, 5)) 
                     sns.scatterplot(data=pca_df, x="PC1", y="PC2", hue="condition", s=100, ax=ax, alpha=0.9)
                     
                     ax.set_xlabel(f"PC1: {int(var_exp[0])}% variance")
@@ -240,7 +243,7 @@ if st.session_state.processed:
                     with col_plot:
                         st.pyplot(fig_pca, use_container_width=False)
                     with col_dl:
-                        st.markdown("**İndir (HQ):**")
+                        st.markdown("**İndir (HQ 300dpi):**")
                         download_buttons_for_plot(fig_pca, f"PCA_{method_name}")
                     plt.close(fig_pca)
 
@@ -257,14 +260,13 @@ if st.session_state.processed:
                     vol_mode_opts = ["Tüm Genler"]
                     if user_gene_list:
                         vol_mode_opts.append("Sadece Özel Liste")
-                    vol_mode = st.radio("Volcano Hangi Genleri Göstersin?", vol_mode_opts, key=f"vol_rad_{method_name}")
+                    vol_mode = st.radio("Volcano Filtresi:", vol_mode_opts, key=f"vol_rad_{method_name}")
 
                     btn_key = f"b_{method_name}"
                     if st.button(f"Hesapla: {g_test} vs {g_ref}", key=btn_key):
                         res_df = run_contrast_analysis(dds, g_test, g_ref, design_col)
                         res_df = add_interpretation(res_df, lfc_cut, padj_cut)
                         
-                        # Eğer özel mod seçildiyse filtrele
                         plot_df = res_df
                         title_prefix = "All Genes"
                         if "Özel Liste" in vol_mode:
@@ -279,7 +281,6 @@ if st.session_state.processed:
                         sns.scatterplot(data=plot_df, x='log2FoldChange', y=-np.log10(plot_df['padj']), 
                                         hue='Yorum', palette=colors, alpha=0.7, ax=ax, legend=False)
                         
-                        # Çizgiler
                         ax.axvline(lfc_cut, ls="--", c="black"); ax.axvline(-lfc_cut, ls="--", c="black")
                         ax.axhline(-np.log10(padj_cut), ls="--", c="black")
                         ax.set_title(f"Volcano ({title_prefix}): {g_test} vs {g_ref}")
@@ -288,18 +289,17 @@ if st.session_state.processed:
                         col_v_plot, col_v_dl = st.columns([3, 1])
                         with col_v_plot: st.pyplot(fig_vol, use_container_width=False)
                         with col_v_dl: 
-                            st.markdown("**İndir (HQ):**")
+                            st.markdown("**İndir (HQ 300dpi):**")
                             download_buttons_for_plot(fig_vol, f"Volcano_{method_name}")
                         plt.close(fig_vol)
                         
-                        # İndirmeler
                         st.divider()
                         col_csv1, col_csv2 = st.columns(2)
-                        col_csv1.download_button(f"📥 Tüm Sonuçları İndir (CSV)", res_df.to_csv().encode('utf-8'), f"Res_ALL_{method_name}.csv", "text/csv")
+                        col_csv1.download_button(f"📥 Tüm Sonuçlar (CSV)", res_df.to_csv().encode('utf-8'), f"Res_ALL_{method_name}.csv", "text/csv")
                         
                         if user_gene_list:
                             subset_res = res_df[res_df.index.isin(user_gene_list)]
-                            col_csv2.download_button(f"📥 Özel Listeyi İndir (CSV)", subset_res.to_csv().encode('utf-8'), f"Res_USER_{method_name}.csv", "text/csv")
+                            col_csv2.download_button(f"📥 Özel Liste (CSV)", subset_res.to_csv().encode('utf-8'), f"Res_USER_{method_name}.csv", "text/csv")
 
                 # --- 3. HEATMAP ---
                 with t3:
@@ -309,7 +309,7 @@ if st.session_state.processed:
                     if user_gene_list:
                         heat_mode_opts.append(f"Özel Liste ({len(user_gene_list)} Gen)")
                     
-                    heat_mode = st.radio("Heatmap Gen Seçimi:", heat_mode_opts, key=f"heat_rad_{method_name}")
+                    heat_mode = st.radio("Heatmap Filtresi:", heat_mode_opts, key=f"heat_rad_{method_name}")
                     
                     heat_targets = []
                     if "Standart" in heat_mode:
@@ -320,33 +320,33 @@ if st.session_state.processed:
                     mat = norm_counts[heat_targets].T
                     
                     if not mat.empty:
-                        # Bireysel Heatmap
+                        # Bireysel
                         st.subheader("A) Bireysel Heatmap")
-                        fig_ind = sns.clustermap(mat, z_score=0, cmap="vlag", col_cluster=False, figsize=(5, 6))
+                        fig_ind = sns.clustermap(mat, z_score=0, cmap="vlag", col_cluster=False, figsize=(6, 7))
                         
                         col_h1, col_h2 = st.columns([3, 1])
                         with col_h1: st.pyplot(fig_ind)
                         with col_h2: 
-                            st.markdown("**İndir (HQ):**")
+                            st.markdown("**İndir (HQ 300dpi):**")
                             download_buttons_for_plot(fig_ind, f"Heatmap_Ind_{method_name}")
                         plt.close(fig_ind.fig)
                         
                         st.divider()
                         
-                        # Ortalama Heatmap
+                        # Ortalama
                         st.subheader("B) Ortalama Heatmap")
                         mat_sub = norm_counts[heat_targets]
                         mat_sub['grp'] = metadata[design_col]
                         grp_mean = mat_sub.groupby('grp').mean().T
                         grp_mean_scaled = grp_mean.apply(lambda x: (x - x.mean()) / x.std(), axis=1).fillna(0)
                         
-                        fig_avg, ax = plt.subplots(figsize=(5, 5))
+                        fig_avg, ax = plt.subplots(figsize=(6, 6))
                         sns.heatmap(grp_mean_scaled, cmap="vlag", center=0, ax=ax)
                         
                         col_ha1, col_ha2 = st.columns([3, 1])
                         with col_ha1: st.pyplot(fig_avg, use_container_width=False)
                         with col_ha2: 
-                            st.markdown("**İndir (HQ):**")
+                            st.markdown("**İndir (HQ 300dpi):**")
                             download_buttons_for_plot(fig_avg, f"Heatmap_Avg_{method_name}")
                         plt.close(fig_avg)
                     else:
