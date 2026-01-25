@@ -7,8 +7,8 @@ from sklearn.decomposition import PCA
 import io
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="RNA-Seq Final Fix", layout="wide")
-st.title("🧬 RNA-Seq Analiz Hattı (Manuel R-Mantığı)")
+st.set_page_config(page_title="RNA-Seq Analiz Hattı (V2)", layout="wide")
+st.title("🧬 RNA-Seq Analiz Hattı (DESeq2-Style)")
 
 # --- CSS DÜZELTME ---
 st.markdown("""
@@ -32,45 +32,54 @@ def save_plot_hq(fig, format="png"):
     buf.seek(0)
     return buf
 
-# --- R MANTIĞI İLE NORMALİZASYON VE PCA ---
-def r_style_normalization(counts_df):
+# --- DESEQ2 STİLİ NORMALİZASYON (DÜZELTİLMİŞ) ---
+def calculate_size_factors_deseq_style(counts_df):
     """
-    R DESeq2'nin 'estimateSizeFactors' ve 'log2' mantığını manuel uygular.
-    Kütüphane hatasından etkilenmez.
+    DESeq2 mantığına birebir uygun Size Factor hesaplar:
+    Sadece TÜM örneklerde sıfırdan büyük olan genler geometrik ortalama için kullanılır.
     """
-    # 1. 0 olan değerleri filtrelemeden önce log al (Geometrik ortalama için)
-    # R mantığı: log(counts) -> rowMeans -> exp -> median(counts/geo_means)
+    # 1. Sadece her örnekte dolu (0 olmayan) genleri seç
+    # DESeq2 geometric mean hesabına 0 içeren satırları katmaz.
+    non_zero_genes = counts_df[(counts_df > 0).all(axis=1)]
     
-    # Sıfırları maskele (log(0) hatası olmasın diye +1 eklemiyoruz, R sıfırları atlar)
-    log_counts = np.log(counts_df.replace(0, np.nan))
-    geo_means = np.exp(log_counts.mean(axis=1))
+    # 2. Referans (Geometrik Ortalama) hesapla (log uzayında aritmetik ortalama)
+    log_geomeans = np.log(non_zero_genes).mean(axis=1)
     
-    # Size Factor Hesapla
-    ratios = counts_df.div(geo_means, axis=0)
+    # 3. Ratio hesapla (Sadece geçerli genler için)
+    # Orijinal count matrisindeki bu genlerin değerlerini referansa böl
+    cnts_sub = counts_df.loc[non_zero_genes.index]
+    ratios = cnts_sub.div(np.exp(log_geomeans), axis=0)
+    
+    # 4. Medyan al (Size Factor)
     size_factors = ratios.median(axis=0)
+    return size_factors
+
+def r_style_normalization(counts_df):
+    # Veriyi float'a zorla
+    counts_df = counts_df.astype(float)
     
-    # 2. Normalize Et (Counts / SizeFactor)
-    norm_counts = counts_df.div(size_factors, axis=1)
+    # DESeq2 Size Factors Hesapla
+    sf = calculate_size_factors_deseq_style(counts_df)
     
-    # 3. Log2 Dönüşümü (R'daki vst/rlog yerine geçen en sağlam manuel yöntem: log2(n + 1))
+    # Normalize Et
+    norm_counts = counts_df.div(sf, axis=1)
+    
+    # Log2 Dönüşümü (R'daki VST yerine Log2(n+1))
+    # Not: VST tam olarak taklit edilemez, ama bu en yakın standart yaklaşımdır.
     log_norm_counts = np.log2(norm_counts + 1)
     
-    return log_norm_counts
+    return log_norm_counts, sf
 
 def calculate_pca_r_style(log_norm_df, ntop=500):
-    """
-    R plotPCA fonksiyonunun birebir aynısı:
-    1. Row varyanslarını hesapla (N-1)
-    2. En yüksek varyanslı ntop geni seç
-    3. PCA yap
-    """
     # R 'var' fonksiyonu N-1 kullanır (ddof=1)
     rv = log_norm_df.var(axis=1, ddof=1)
     
     # En yüksek varyanslı genleri seç
     select = rv.sort_values(ascending=False).head(ntop).index
     
-    # PCA uygula (Transpoze edilmiş matris üzerinde)
+    # PCA uygula
+    # sklearn PCA features'ı merkezler (centering) ama scale etmez.
+    # DESeq2 plotPCA da aynısını yapar (prcomp).
     pca_input = log_norm_df.loc[select].T
     
     pca = PCA(n_components=2)
@@ -87,9 +96,6 @@ with st.sidebar:
     st.markdown("---")
     f_samples = st.file_uploader("Samples CSV", type=["csv"], key="samples")
     f_genes = st.file_uploader("Gen Listesi (TXT)", type=["txt"], key="genes")
-    
-    st.markdown("---")
-    ref_grp = st.text_input("Referans Grup", "Control")
     
     if st.button("Analizi Başlat", type="primary"):
         st.session_state.processed = False
@@ -115,7 +121,6 @@ if st.session_state.run_trigger:
     try:
         if f_hisat:
             h_df = pd.read_csv(f_hisat, index_col=0)
-            # Kesişim al
             common = list(set(h_df.columns) & set(samp.index))
             st.session_state.hisat_df = h_df[common]
             
@@ -143,33 +148,33 @@ if st.session_state.processed:
     
     for name, raw_counts, tab in datasets:
         with tab:
-            # 1. MANUEL NORMALİZASYON (R STİLİ)
-            log_norm = r_style_normalization(raw_counts)
+            # 1. MANUEL NORMALİZASYON (R DESeq2 STİLİ)
+            log_norm, sf = r_style_normalization(raw_counts)
             
+            # Size Factors Kontrol (Opsiyonel Bilgi)
+            with st.expander(f"{name} - Size Factors (Genişlet)"):
+                st.dataframe(sf.to_frame(name="SizeFactor").T)
+
             # --- PCA BÖLÜMÜ ---
             st.subheader(f"PCA Analizi - {name}")
             
-            # Kontroller
             c1, c2, c3, c4 = st.columns(4)
             use_custom = c1.checkbox(f"Gen Listesi Kullan", key=f"uc_{name}")
             inv_x = c2.checkbox("X Ters Çevir", value=False, key=f"ix_{name}")
             inv_y = c3.checkbox("Y Ters Çevir", value=False, key=f"iy_{name}")
             
-            # PCA Hesapla
             if use_custom and f_genes:
                 f_genes.seek(0)
                 targets = [l.decode("utf-8").strip() for l in f_genes]
                 valid = [t for t in targets if t in log_norm.index]
                 if not valid: st.error("Genler bulunamadı!"); st.stop()
                 
-                # Özel listede varyans seçimi yapılmaz, hepsi kullanılır
                 pca_input = log_norm.loc[valid].T
                 pca = PCA(n_components=2)
                 pca_res = pca.fit_transform(pca_input)
                 percentVar = pca.explained_variance_ratio_ * 100
                 title_suffix = f"(User List: {len(valid)})"
             else:
-                # Standart R Mantığı (Top 500)
                 pca_res, percentVar, _ = calculate_pca_r_style(log_norm, ntop=500)
                 title_suffix = "(Top 500 Genes)"
 
@@ -177,24 +182,20 @@ if st.session_state.processed:
             if inv_x: pca_res[:,0] *= -1
             if inv_y: pca_res[:,1] *= -1
             
-            # Plot Dataframe
             plot_df = pd.DataFrame(pca_res, columns=["PC1", "PC2"], index=log_norm.columns)
             plot_df['group'] = meta.loc[plot_df.index, d_col]
             
-            # GRAFİK ÇİZİMİ (KARE FORMAT - 8x8)
-            fig, ax = plt.subplots(figsize=(8, 8)) 
-            sns.scatterplot(data=plot_df, x="PC1", y="PC2", hue="group", s=150, alpha=0.9, ax=ax, edgecolor="black", linewidth=0.5)
+            # GRAFİK (R stiline yakınlaştırma)
+            fig, ax = plt.subplots(figsize=(7, 7)) 
+            sns.scatterplot(data=plot_df, x="PC1", y="PC2", hue="group", style="group",
+                            s=200, alpha=0.9, ax=ax, edgecolor="black", linewidth=0.8, palette="Set1")
             
-            # Eksen Etiketleri (R Formatı)
             ax.set_xlabel(f"PC1: {int(round(percentVar[0]))}% variance", fontsize=12)
             ax.set_ylabel(f"PC2: {int(round(percentVar[1]))}% variance", fontsize=12)
             ax.set_title(f"PCA Plot {title_suffix} - {name}", fontsize=14)
+            ax.grid(True, linestyle=':', alpha=0.6)
+            ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left', frameon=False)
             
-            # Izgara ve Legend
-            ax.grid(True, linestyle='--', alpha=0.4)
-            ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left', frameon=True)
-            
-            # Ekrana Bas
             col_graph, col_dl = st.columns([3, 1])
             with col_graph:
                 st.pyplot(fig, use_container_width=False)
@@ -209,29 +210,31 @@ if st.session_state.processed:
             # --- HEATMAP BÖLÜMÜ ---
             st.subheader("Heatmap Analizi")
             
-            # Gen Seçimi
             if use_custom and f_genes:
-                hm_genes = valid # Yukarıda hesaplananı kullan
+                hm_genes = valid
                 hm_title = "Özel Gen Listesi"
             else:
-                # Top 50 Varyans
                 rv = log_norm.var(axis=1, ddof=1)
                 hm_genes = rv.sort_values(ascending=False).head(50).index
                 hm_title = "Top 50 Değişken Gen"
             
             mat = log_norm.loc[hm_genes]
             
-            # Z-Score Hesapla (Row-based)
-            # (Değer - Ortalama) / Std
+            # Z-Score Hesapla (Satır bazlı)
             mat_z = mat.apply(lambda x: (x - x.mean()) / x.std(), axis=1)
             
-            # Grafik
+            # Seaborn Clustermap (R pheatmap 'complete' metoduna benzetme)
+            # R varsayılanı genellikle clustering_method="complete", distance="euclidean"
             fig_hm = sns.clustermap(mat_z, 
-                                   cmap="vlag", 
+                                   method='complete', # R varsayılanına daha yakın
+                                   metric='euclidean',
+                                   cmap="RdBu_r", # RColorBrewer benzeri
                                    center=0, 
                                    col_cluster=False, 
                                    figsize=(8, 10),
                                    cbar_kws={'label': 'Z-Score'})
+            
+            fig_hm.ax_heatmap.set_title(hm_title)
             
             col_hm_g, col_hm_d = st.columns([3, 1])
             with col_hm_g:
