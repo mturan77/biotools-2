@@ -10,66 +10,7 @@ import io
 
 # Sayfa Ayarları
 st.set_page_config(page_title="RNA-Seq Full Analiz", layout="wide")
-st.title("🧬 RNA-Seq Analiz Hattı: HISAT & SALMON (Full Çıktı)")
-
-# --- 0. MANUEL & BİLGİLENDİRME ---
-with st.expander("ℹ️ NASIL KULLANILIR? (Dosya İsimleri ve Formatlar)"):
-    st.markdown("""
-    ### Kullanılması Gereken Dosya Formatları
-    
-    Bu uygulama, elinizdeki R kodunun mantığıyla birebir çalışır. Aşağıdaki dosyaları ilgili kutucuklara yükleyiniz.
-
-    1.  **HISAT Counts Dosyası:**
-        * Örnek Dosya Adı: `HISAT_Raw_Counts_Matrix_Verbose.csv`
-        * İçerik: Satırlarda Genler, Sütunlarda Örnekler (Ham Sayılar).
-
-    2.  **SALMON Counts Dosyası:**
-        * Örnek Dosya Adı: `SALMON_Raw_Counts_Matrix.csv`
-        * İçerik: HISAT ile aynı formatta.
-
-    3.  **Samples (Metadata) Dosyası:**
-        * Örnek Dosya Adı: `samples.csv`
-        * **Önemli:** İlk sütunda örnek isimleri (SRR...), ikinci sütunda veya `condition` adında bir sütunda gruplar (Control, Treatment vb.) olmalı.
-
-    4.  **Gen Listesi (Opsiyonel):**
-        * Örnek Dosya Adı: `gen_listesi.txt`
-        * İçerik: Alt alta gen isimleri.
-    """)
-    st.markdown("""
-    ### 1. Dosya Formatları Nasıl Olmalı?
-    
-    **A) Counts Matrix (Sayım Matrisi):**
-    * **Format:** `.csv` (Virgül ile ayrılmış)
-    * **Satırlar:** Gen İsimleri (GeneID)
-    * **Sütunlar:** Örnek İsimleri (SampleID)
-    * *Değerler:* Ham okuma sayıları (Raw integers). Normalize edilmiş veri yüklemeyin!
-    
-    | | SRR101 | SRR102 | SRR103 |
-    |---|---|---|---|
-    | **GeneA** | 150 | 160 | 0 |
-    | **GeneB** | 2000 | 2100 | 1950 |
-
-    **B) Metadata / Samples (Örnek Bilgileri):**
-    * **Format:** `.csv`
-    * **Satırlar:** Örnek İsimleri (Counts dosyasındaki sütunlarla BİREBİR AYNI olmalı)
-    * **Sütun:** `condition` adında bir sütun olmalı (Control, Treatment vb. yazar).
-    
-    | | condition | batch |
-    |---|---|---|
-    | **SRR101** | Control | 1 |
-    | **SRR102** | Treatment | 1 |
-    
-    ---
-    ### 2. Parametreler Ne İşe Yarar?
-    * **P-adj Cutoff (0.05):** İstatistiksel olarak ne kadar emin olmak istiyorsunuz? Genelde 0.05 (veya %5 hata payı) kullanılır.
-    * **Log2 Fold Change (LFC):** Gen ifadesinin kat değişim eşiği. `1` demek, genin ifadesi 2 katına çıkmış (veya yarıya inmiş) demektir.
-    * **Min Count:** Çok az okunan (örneğin toplamda 10'dan az okunan) genleri atarak analizi hızlandırır ve gürültüyü azaltır.
-    """)
-
-
-
-
-
+st.title("🧬 RNA-Seq Analiz Hattı: HISAT & SALMON (Hata Düzeltildi)")
 
 # --- 1. SIDEBAR ---
 with st.sidebar:
@@ -171,7 +112,21 @@ def render_analysis_section(dds, samples_df, design_col, method_name, gene_list_
     """ Tek bir yöntemin (HISAT veya SALMON) tüm çıktılarını basar """
     
     st.success(f"✅ {method_name} Analizi Hazır")
-    norm_counts = dds.layers['log1norm']
+    
+    # --- HATA DÜZELTME KISMI ---
+    # log1norm bazen otomatik oluşmuyor, manuel hesaplıyoruz
+    if 'log1norm' in dds.layers:
+        norm_counts = dds.layers['log1norm']
+    elif 'normed_counts' in dds.layers:
+        # Normalize countlara log(x+1) uygula
+        norm_counts = np.log1p(dds.layers['normed_counts'])
+        # Eğer DataFrame değilse (bazı sürümlerde numpy array döner) DataFrame'e çevir
+        if not isinstance(norm_counts, pd.DataFrame):
+             norm_counts = pd.DataFrame(norm_counts, index=dds.obs_names, columns=dds.var_names)
+    else:
+        st.error(f"Kritik Hata: {method_name} için normalize edilmiş veriler bulunamadı.")
+        return
+    # ---------------------------
     
     t1, t2, t3 = st.tabs(["📊 1. PCA", "🌋 2. Volcano & CSV", "🔥 3. Heatmaps"])
     
@@ -201,6 +156,7 @@ def render_analysis_section(dds, samples_df, design_col, method_name, gene_list_
         st.subheader("Karşılaştırma ve Sonuç Dosyaları")
         gruplar = samples_df[design_col].unique()
         c1, c2 = st.columns(2)
+        # Hata olmaması için key ekledik
         g1 = c1.selectbox("Grup 1", gruplar, key=f"{method_name}_g1")
         g2 = c2.selectbox("Grup 2", [x for x in gruplar if x != g1], key=f"{method_name}_g2")
         
@@ -291,7 +247,7 @@ def render_analysis_section(dds, samples_df, design_col, method_name, gene_list_
             norm_counts_subset['condition'] = samples_df[design_col]
             grouped_mean = norm_counts_subset.groupby('condition').mean().T 
             
-            # Heatmap Verisini İndir (Senin R kodundaki özellik)
+            # Heatmap Verisini İndir
             csv_heatmap = grouped_mean.to_csv().encode('utf-8')
             st.download_button(
                 label="📊 Ortalama Verisini İndir (CSV)",
