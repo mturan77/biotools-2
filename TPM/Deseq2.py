@@ -10,100 +10,73 @@ import io
 
 # --- SAYFA AYARLARI ---
 st.set_page_config(page_title="RNA-Seq Final", layout="wide")
-st.title("🧬 RNA-Seq Analiz Hattı (R Uyumlu Final)")
+st.title("🧬 RNA-Seq Analiz Hattı (R-Style Variance)")
 
-# --- OTURUM YÖNETİMİ ---
+# --- SESSION STATE ---
 if 'hisat_dds' not in st.session_state: st.session_state.hisat_dds = None
 if 'salmon_dds' not in st.session_state: st.session_state.salmon_dds = None
 if 'processed' not in st.session_state: st.session_state.processed = False
 if 'design_col' not in st.session_state: st.session_state.design_col = None
 
-# --- HQ İNDİRME FONKSİYONLARI ---
+# --- HQ İNDİRME ---
 def save_plot_high_quality(fig, format="png"):
     buf = io.BytesIO()
-    # dpi=300: Baskı kalitesi
     fig.savefig(buf, format=format, bbox_inches="tight", dpi=300)
     buf.seek(0)
     return buf
 
 def download_buttons_for_plot(fig, filename_prefix):
     col1, col2, col3 = st.columns([1, 1, 1])
-    with col1: 
-        st.download_button("📷 PNG (HQ)", save_plot_high_quality(fig, "png"), f"{filename_prefix}.png", "image/png")
-    with col2: 
-        st.download_button("✒️ SVG (Vektör)", save_plot_high_quality(fig, "svg"), f"{filename_prefix}.svg", "image/svg+xml")
-    with col3: 
-        st.download_button("📄 PDF (Rapor)", save_plot_high_quality(fig, "pdf"), f"{filename_prefix}.pdf", "application/pdf")
+    with col1: st.download_button("📷 PNG (HQ)", save_plot_high_quality(fig, "png"), f"{filename_prefix}.png", "image/png")
+    with col2: st.download_button("✒️ SVG", save_plot_high_quality(fig, "svg"), f"{filename_prefix}.svg", "image/svg+xml")
+    with col3: st.download_button("📄 PDF", save_plot_high_quality(fig, "pdf"), f"{filename_prefix}.pdf", "application/pdf")
 
-def add_interpretation(df, lfc_limit, padj_limit):
-    conditions = [
-        (df['log2FoldChange'] > lfc_limit) & (df['padj'] < padj_limit),
-        (df['log2FoldChange'] < -lfc_limit) & (df['padj'] < padj_limit),
-        (df['log2FoldChange'] > 0) & (df['log2FoldChange'] <= lfc_limit) & (df['padj'] < padj_limit),
-        (df['log2FoldChange'] < 0) & (df['log2FoldChange'] >= -lfc_limit) & (df['padj'] < padj_limit)
-    ]
-    choices = ["GUCLU ARTIS (UP)", "GUCLU AZALIS (DOWN)", "Hafif Artis", "Hafif Azalis"]
-    df['Yorum'] = np.select(conditions, choices, default="Degisim Yok / Anlamsiz")
-    return df
-
-def run_deseq_fit(counts_df, samples_df, design_col, ref_level, min_cnt):
-    # Kesişim
+# --- ANALİZ MOTORU ---
+def run_deseq_fit(counts_df, samples_df, design_col, min_cnt):
+    # Ortak örnekler
     common = list(set(counts_df.columns) & set(samples_df.index))
-    if not common: return None, "Samples ve Counts arasında ortak örnek yok!"
-    
     counts_df = counts_df[common]
     samples_df = samples_df.loc[common]
     
-    # Transpose
-    counts_T = counts_df.T 
+    # Filtreleme (Genes rows)
+    counts_df = counts_df[counts_df.sum(axis=1) >= min_cnt]
     
-    # Filtreleme (R: rowSums >= 10)
-    genes_keep = counts_T.columns[counts_T.sum(axis=0) >= min_cnt]
-    counts_T = counts_T[genes_keep]
+    # Transpose (PyDESeq2 için)
+    counts_T = counts_df.T 
     
     try:
         inference = DeseqDataSet(
             counts=counts_T, 
             metadata=samples_df, 
             design_factors=design_col,
-            ref_level=[design_col, ref_level],
             quiet=True
         )
         inference.deseq2()
         
-        # VST ZORLAMA
-        try:
-            inference.vst() 
-        except:
-            st.warning("VST yapılamadı, Log kullanılıyor.")
-        
+        # --- ÖNEMLİ DEĞİŞİKLİK ---
+        # VST hatası almamak ve R ile benzerlik için 'normed_counts' üzerinden 
+        # log2(x + 1) dönüşümü yapıyoruz. Bu, blind=TRUE VST'ye çok yakındır.
+        if 'normed_counts' in inference.layers:
+            inference.layers['log1p'] = np.log2(inference.layers['normed_counts'] + 1)
+        else:
+            inference.layers['log1p'] = np.log2(inference.X + 1)
+            
         return inference, None
     except Exception as e:
         return None, str(e)
 
-def run_contrast_analysis(dds, g1, g2, design_col):
-    stat_res = DeseqStats(dds, contrast=[design_col, g1, g2], quiet=True)
-    stat_res.summary()
-    return stat_res.results_df
-
-def get_norm_counts(dds):
-    # VST öncelikli
-    if hasattr(dds, 'layers') and 'vst_counts' in dds.layers:
-        data = dds.layers['vst_counts']
-    elif hasattr(dds, 'layers') and 'log1norm' in dds.layers:
-        data = dds.layers['log1norm']
-    elif hasattr(dds, 'layers') and 'normed_counts' in dds.layers:
-        data = np.log1p(dds.layers['normed_counts'])
+def get_norm_data(dds):
+    # Log dönüşümlü veriyi çek
+    if hasattr(dds, 'layers') and 'log1p' in dds.layers:
+        data = dds.layers['log1p']
     else:
-        data = np.log1p(dds.X)
-        
-    if not isinstance(data, pd.DataFrame):
-        data = pd.DataFrame(data, index=dds.obs_names, columns=dds.var_names)
-    return data
+        data = np.log2(dds.X + 1)
+    
+    return pd.DataFrame(data, index=dds.obs_names, columns=dds.var_names)
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.header("1. Veri ve Ayarlar")
+    st.header("1. Veri Yükleme")
     file_hisat = st.file_uploader("HISAT CSV", type=["csv"], key="hisat")
     file_salmon = st.file_uploader("SALMON CSV", type=["csv"], key="salmon")
     st.markdown("---")
@@ -111,11 +84,10 @@ with st.sidebar:
     file_genes = st.file_uploader("Gen Listesi", type=["txt"], key="genes")
     
     st.markdown("---")
-    st.subheader("2. Kritik Ayarlar")
-    ref_group = st.text_input("Referans Grup Adı", value="Control", help="Örn: Control")
-    padj_cut = st.number_input("P-adj Cutoff", 0.0, 1.0, 0.05, 0.01)
-    lfc_cut = st.number_input("Log2FC Cutoff", 0.0, 10.0, 1.0, 0.5)
-    min_count = st.number_input("Min Count", 0, 100, 10)
+    st.subheader("2. Parametreler")
+    ref_group = st.text_input("Referans Grup", value="Control")
+    lfc_cut = st.number_input("Log2FC Cutoff", value=1.0)
+    padj_cut = st.number_input("Padj Cutoff", value=0.05)
     
     if st.button("Analizi Başlat", type="primary"):
         st.session_state.processed = False
@@ -127,227 +99,107 @@ with st.sidebar:
 if st.session_state.run_trigger:
     if not file_samples:
         st.error("Samples dosyası eksik!")
-    elif not (file_hisat or file_salmon):
-        st.error("En az bir count dosyası yükleyin.")
-    else:
-        try:
-            samples_data = pd.read_csv(file_samples, index_col=0)
-            design_col = "condition"
-            if "condition" not in samples_data.columns: design_col = samples_data.columns[0]
-            samples_data[design_col] = samples_data[design_col].astype(str)
-            st.session_state.design_col = design_col
-            
-            unique_groups = samples_data[design_col].unique()
-            if ref_group not in unique_groups:
-                st.error(f"Referans grup ('{ref_group}') bulunamadı! Mevcut: {unique_groups}")
-                st.stop()
-            
-            with st.status("Analiz Yapılıyor... (VST İşlemi)", expanded=True) as status:
-                if file_hisat:
-                    st.write("HISAT2 işleniyor...")
-                    counts = pd.read_csv(file_hisat, index_col=0)
-                    dds, err = run_deseq_fit(counts, samples_data, design_col, ref_group, min_count)
-                    if err: st.error(err)
-                    else: st.session_state.hisat_dds = dds
-                
-                if file_salmon:
-                    st.write("SALMON işleniyor...")
-                    counts = pd.read_csv(file_salmon, index_col=0)
-                    dds, err = run_deseq_fit(counts, samples_data, design_col, ref_group, min_count)
-                    if err: st.error(err)
-                    else: st.session_state.salmon_dds = dds
-                
-                st.session_state.processed = True
-                status.update(label="Analiz Tamamlandı!", state="complete", expanded=False)
-        except Exception as e:
-            st.error(f"Hata: {e}")
+        st.stop()
+    
+    samples_data = pd.read_csv(file_samples, index_col=0)
+    design_col = "condition"
+    if "condition" not in samples_data.columns: design_col = samples_data.columns[0]
+    samples_data[design_col] = samples_data[design_col].astype(str)
+    st.session_state.design_col = design_col
+    
+    with st.status("Analiz yapılıyor...", expanded=True):
+        if file_hisat:
+            c = pd.read_csv(file_hisat, index_col=0)
+            dds, err = run_deseq_fit(c, samples_data, design_col, 10)
+            st.session_state.hisat_dds = dds
+        if file_salmon:
+            c = pd.read_csv(file_salmon, index_col=0)
+            dds, err = run_deseq_fit(c, samples_data, design_col, 10)
+            st.session_state.salmon_dds = dds
+        st.session_state.processed = True
 
 if st.session_state.processed:
-    titles = []
-    if st.session_state.hisat_dds: titles.append("📂 HISAT2 Sonuçları")
-    if st.session_state.salmon_dds: titles.append("📂 SALMON Sonuçları")
+    tabs = st.tabs(["📊 HISAT2 Sonuçları", "📊 SALMON Sonuçları"])
+    datasets = []
+    if st.session_state.hisat_dds: datasets.append(("HISAT2", st.session_state.hisat_dds, tabs[0]))
+    if st.session_state.salmon_dds: datasets.append(("SALMON", st.session_state.salmon_dds, tabs[1]))
     
-    if titles:
-        tabs = st.tabs(titles)
-        datasets = []
-        if st.session_state.hisat_dds: datasets.append(("HISAT2", st.session_state.hisat_dds))
-        if st.session_state.salmon_dds: datasets.append(("SALMON", st.session_state.salmon_dds))
-        
-        for i, (method_name, dds) in enumerate(datasets):
-            with tabs[i]:
-                norm_counts = get_norm_counts(dds)
-                design_col = st.session_state.design_col
-                metadata = dds.obs
-                
-                # Özel Gen Listesini Hazırla
-                user_gene_list = []
-                if file_genes:
-                    file_genes.seek(0)
-                    user_gene_list = [line.decode("utf-8").strip() for line in file_genes]
-                    user_gene_list = [g for g in user_gene_list if g in norm_counts.columns]
-                
-                st.success(f"✅ {method_name} Modeli Hazır.")
-                t1, t2, t3 = st.tabs(["📊 PCA", "🌋 Volcano", "🔥 Heatmap"])
-                
-                # --- 1. PCA ---
-                with t1:
-                    st.markdown("#### PCA Ayarları")
-                    
-                    # PCA Modu Seçimi
-                    pca_mode_opts = ["Standart (Top 500 Varyans)"]
-                    if user_gene_list:
-                        pca_mode_opts.append(f"Özel Liste ({len(user_gene_list)} Gen)")
-                    
-                    pca_mode = st.radio("PCA Gen Seçimi:", pca_mode_opts, key=f"pca_rad_{method_name}")
-                    
-                    # Yön Çevirme (Varsayılan olarak Y'yi çevirdik ki R ile uyuşsun)
-                    c_inv1, c_inv2 = st.columns(2)
-                    inv_x = c_inv1.checkbox("X Ters Çevir", value=False, key=f"ix_{method_name}")
-                    inv_y = c_inv2.checkbox("Y Ters Çevir", value=True, key=f"iy_{method_name}")
-                    
-                    # Veriyi Hazırla
-                    if "Standart" in pca_mode:
-                        # !!! KRİTİK NOKTA: R (Sample Variance) vs Python (Population Variance) !!!
-                        # ddof=1 kullanarak R'ın 'rowVars' fonksiyonunu taklit ediyoruz.
-                        variances = norm_counts.var(axis=0, ddof=1)
-                        genes_for_pca = variances.sort_values(ascending=False).head(500).index
-                        plot_title = f"PCA (Top 500 Genes) - {method_name}"
-                    else:
-                        genes_for_pca = user_gene_list
-                        plot_title = f"PCA (User List) - {method_name}"
+    for name, dds, tab in datasets:
+        with tab:
+            norm_df = get_norm_data(dds) # Samples x Genes
+            meta = dds.obs
+            design_col = st.session_state.design_col
+            
+            # --- 1. PCA (R MANTIĞI) ---
+            st.subheader(f"PCA Analizi - {name}")
+            
+            c1, c2, c3 = st.columns(3)
+            use_custom = c1.checkbox(f"Gen Listesi Kullan ({name})", value=False)
+            inv_x = c2.checkbox("X Ters Çevir", value=False, key=f"x_{name}")
+            inv_y = c3.checkbox("Y Ters Çevir", value=False, key=f"y_{name}")
 
-                    pca_input = norm_counts[genes_for_pca]
-                    
-                    # PCA Hesapla
-                    pca = PCA(n_components=2)
-                    pca_res = pca.fit_transform(pca_input)
-                    var_exp = pca.explained_variance_ratio_ * 100
-                    
-                    if inv_x: pca_res[:, 0] = pca_res[:, 0] * -1
-                    if inv_y: pca_res[:, 1] = pca_res[:, 1] * -1
-                    
-                    pca_df = pd.DataFrame(pca_res, columns=["PC1", "PC2"], index=norm_counts.index)
-                    pca_df['condition'] = metadata[design_col]
-                    
-                    # Ekran için Küçük, İndirme için Büyük
-                    fig_pca, ax = plt.subplots(figsize=(6, 5)) 
-                    sns.scatterplot(data=pca_df, x="PC1", y="PC2", hue="condition", s=100, ax=ax, alpha=0.9)
-                    
-                    ax.set_xlabel(f"PC1: {int(var_exp[0])}% variance")
-                    ax.set_ylabel(f"PC2: {int(var_exp[1])}% variance")
-                    ax.set_title(plot_title)
-                    ax.grid(True, linestyle='--', alpha=0.5)
-                    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-                    
-                    col_plot, col_dl = st.columns([3, 1])
-                    with col_plot:
-                        st.pyplot(fig_pca, use_container_width=False)
-                    with col_dl:
-                        st.markdown("**İndir (HQ 300dpi):**")
-                        download_buttons_for_plot(fig_pca, f"PCA_{method_name}")
-                    plt.close(fig_pca)
+            # Gen Seçimi
+            if use_custom and file_genes:
+                file_genes.seek(0)
+                targets = [l.decode("utf-8").strip() for l in file_genes]
+                valid_targets = [t for t in targets if t in norm_df.columns]
+                pca_input = norm_df[valid_targets]
+                title_pca = f"PCA (User List: {len(valid_targets)} genes)"
+            else:
+                # R GİBİ VARYANS HESABI (ddof=1 çok önemli!)
+                vars = norm_df.var(axis=0, ddof=1)
+                top500 = vars.sort_values(ascending=False).head(500).index
+                pca_input = norm_df[top500]
+                title_pca = "PCA (Top 500 Variable Genes)"
 
-                # --- 2. VOLCANO ---
-                with t2:
-                    st.markdown("#### Karşılaştırma Seçimi")
-                    c1, c2 = st.columns(2)
-                    grps = metadata[design_col].unique()
-                    test_opts = [g for g in grps if g != ref_group]
-                    g_test = c1.selectbox(f"Test Grubu", test_opts, key=f"t_{method_name}")
-                    g_ref = c2.text_input(f"Referans", value=ref_group, disabled=True, key=f"r_{method_name}")
-                    
-                    # Volcano Modu
-                    vol_mode_opts = ["Tüm Genler"]
-                    if user_gene_list:
-                        vol_mode_opts.append("Sadece Özel Liste")
-                    vol_mode = st.radio("Volcano Filtresi:", vol_mode_opts, key=f"vol_rad_{method_name}")
+            # PCA Hesaplama
+            pca = PCA(n_components=2)
+            pca_res = pca.fit_transform(pca_input)
+            var_exp = pca.explained_variance_ratio_ * 100
+            
+            if inv_x: pca_res[:,0] *= -1
+            if inv_y: pca_res[:,1] *= -1
+            
+            pca_df = pd.DataFrame(pca_res, columns=["PC1", "PC2"], index=norm_df.index)
+            pca_df['condition'] = meta[design_col]
+            
+            # Çizim
+            fig, ax = plt.subplots(figsize=(6, 5))
+            sns.scatterplot(data=pca_df, x="PC1", y="PC2", hue="condition", s=120, alpha=0.9, ax=ax)
+            ax.set_xlabel(f"PC1: {int(var_exp[0])}% variance")
+            ax.set_ylabel(f"PC2: {int(var_exp[1])}% variance")
+            ax.set_title(title_pca)
+            ax.grid(True, ls="--", alpha=0.4)
+            ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left')
+            
+            c_g, c_d = st.columns([3, 1])
+            c_g.pyplot(fig, use_container_width=False)
+            c_d.markdown("**İndir:**")
+            download_buttons_for_plot(fig, f"PCA_{name}")
+            plt.close(fig)
 
-                    btn_key = f"b_{method_name}"
-                    if st.button(f"Hesapla: {g_test} vs {g_ref}", key=btn_key):
-                        res_df = run_contrast_analysis(dds, g_test, g_ref, design_col)
-                        res_df = add_interpretation(res_df, lfc_cut, padj_cut)
-                        
-                        plot_df = res_df
-                        title_prefix = "All Genes"
-                        if "Özel Liste" in vol_mode:
-                            plot_df = res_df[res_df.index.isin(user_gene_list)]
-                            title_prefix = "User List Only"
-                        
-                        colors = {"GUCLU ARTIS (UP)": "blue", "GUCLU AZALIS (DOWN)": "red", 
-                                  "Hafif Artis": "lightblue", "Hafif Azalis": "salmon", 
-                                  "Degisim Yok / Anlamsiz": "grey"}
-                        
-                        fig_vol, ax = plt.subplots(figsize=(6, 5))
-                        sns.scatterplot(data=plot_df, x='log2FoldChange', y=-np.log10(plot_df['padj']), 
-                                        hue='Yorum', palette=colors, alpha=0.7, ax=ax, legend=False)
-                        
-                        ax.axvline(lfc_cut, ls="--", c="black"); ax.axvline(-lfc_cut, ls="--", c="black")
-                        ax.axhline(-np.log10(padj_cut), ls="--", c="black")
-                        ax.set_title(f"Volcano ({title_prefix}): {g_test} vs {g_ref}")
-                        ax.grid(True, linestyle='--', alpha=0.3)
-                        
-                        col_v_plot, col_v_dl = st.columns([3, 1])
-                        with col_v_plot: st.pyplot(fig_vol, use_container_width=False)
-                        with col_v_dl: 
-                            st.markdown("**İndir (HQ 300dpi):**")
-                            download_buttons_for_plot(fig_vol, f"Volcano_{method_name}")
-                        plt.close(fig_vol)
-                        
-                        st.divider()
-                        col_csv1, col_csv2 = st.columns(2)
-                        col_csv1.download_button(f"📥 Tüm Sonuçlar (CSV)", res_df.to_csv().encode('utf-8'), f"Res_ALL_{method_name}.csv", "text/csv")
-                        
-                        if user_gene_list:
-                            subset_res = res_df[res_df.index.isin(user_gene_list)]
-                            col_csv2.download_button(f"📥 Özel Liste (CSV)", subset_res.to_csv().encode('utf-8'), f"Res_USER_{method_name}.csv", "text/csv")
-
-                # --- 3. HEATMAP ---
-                with t3:
-                    st.markdown("#### Heatmap Ayarları")
-                    
-                    heat_mode_opts = ["Standart (Top 50 Varyans)"]
-                    if user_gene_list:
-                        heat_mode_opts.append(f"Özel Liste ({len(user_gene_list)} Gen)")
-                    
-                    heat_mode = st.radio("Heatmap Filtresi:", heat_mode_opts, key=f"heat_rad_{method_name}")
-                    
-                    heat_targets = []
-                    if "Standart" in heat_mode:
-                        heat_targets = norm_counts.var(axis=0).sort_values(ascending=False).head(50).index.tolist()
-                    else:
-                        heat_targets = user_gene_list
-                    
-                    mat = norm_counts[heat_targets].T
-                    
-                    if not mat.empty:
-                        # Bireysel
-                        st.subheader("A) Bireysel Heatmap")
-                        fig_ind = sns.clustermap(mat, z_score=0, cmap="vlag", col_cluster=False, figsize=(6, 7))
-                        
-                        col_h1, col_h2 = st.columns([3, 1])
-                        with col_h1: st.pyplot(fig_ind)
-                        with col_h2: 
-                            st.markdown("**İndir (HQ 300dpi):**")
-                            download_buttons_for_plot(fig_ind, f"Heatmap_Ind_{method_name}")
-                        plt.close(fig_ind.fig)
-                        
-                        st.divider()
-                        
-                        # Ortalama
-                        st.subheader("B) Ortalama Heatmap")
-                        mat_sub = norm_counts[heat_targets]
-                        mat_sub['grp'] = metadata[design_col]
-                        grp_mean = mat_sub.groupby('grp').mean().T
-                        grp_mean_scaled = grp_mean.apply(lambda x: (x - x.mean()) / x.std(), axis=1).fillna(0)
-                        
-                        fig_avg, ax = plt.subplots(figsize=(6, 6))
-                        sns.heatmap(grp_mean_scaled, cmap="vlag", center=0, ax=ax)
-                        
-                        col_ha1, col_ha2 = st.columns([3, 1])
-                        with col_ha1: st.pyplot(fig_avg, use_container_width=False)
-                        with col_ha2: 
-                            st.markdown("**İndir (HQ 300dpi):**")
-                            download_buttons_for_plot(fig_avg, f"Heatmap_Avg_{method_name}")
-                        plt.close(fig_avg)
-                    else:
-                        st.warning("Seçilen kriterlere uygun gen bulunamadı.")
+            st.divider()
+            
+            # --- 2. HEATMAP ---
+            st.subheader(f"Heatmap - {name}")
+            
+            # Heatmap Genleri
+            if file_genes:
+                file_genes.seek(0)
+                targets = [l.decode("utf-8").strip() for l in file_genes]
+                targets = [t for t in targets if t in norm_df.columns]
+                heatmap_input = norm_df[targets].T
+                title_hm = "Özel Liste"
+            else:
+                vars = norm_df.var(axis=0, ddof=1)
+                top50 = vars.sort_values(ascending=False).head(50).index
+                heatmap_input = norm_df[top50].T
+                title_hm = "Top 50 Varyans"
+            
+            # Bireysel Heatmap
+            fig_hm = sns.clustermap(heatmap_input, z_score=0, cmap="vlag", col_cluster=False, figsize=(6, 8))
+            c_h1, c_h2 = st.columns([3, 1])
+            c_h1.pyplot(fig_hm)
+            c_h2.markdown("**İndir:**")
+            download_buttons_for_plot(fig_hm, f"Heatmap_{name}")
+            plt.close(fig_hm.fig)
