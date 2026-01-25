@@ -69,14 +69,11 @@ def run_deseq_fit(counts_df, samples_df, design_col, ref_level, min_cnt):
         # DESeq2 Analizi
         inference.deseq2()
         
-        # --- ÖNEMLİ DEĞİŞİKLİK: VST HESAPLAMA ---
-        # R'daki vst() fonksiyonunun karşılığıdır. 
-        # Logaritma yerine bunu kullanırsak varyanslar R ile eşleşir.
+        # --- ÖNEMLİ: VST HESAPLAMA (R Eşleşmesi İçin) ---
         try:
-            inference.vst(blind=False) # R scriptinizdeki blind=FALSE ayarı
+            inference.vst(blind=False) 
         except:
-            # Eğer VST başarısız olursa (çok az örnek varsa) log1p'ye düşer ama uyarı veririz
-            st.warning("VST hesaplanamadı, Log dönüşümü kullanılıyor (Sonuçlar R'dan biraz sapabilir).")
+            st.warning("VST hesaplanamadı, Log dönüşümü kullanılıyor.")
         
         return inference, None
     except Exception as e:
@@ -191,7 +188,7 @@ if st.session_state.processed:
                     
                     # 1. Varyansı Hesapla
                     variances = norm_counts.var(axis=0)
-                    # 2. En yüksek varyansa sahip 500 geni seç
+                    # 2. En yüksek varyansa sahip 500 geni seç (R varsayılanı budur)
                     top_500_genes = variances.sort_values(ascending=False).head(500).index
                     pca_input = norm_counts[top_500_genes]
                     
@@ -214,11 +211,10 @@ if st.session_state.processed:
                     ax.set_xlabel(f"PC1: {int(var_exp[0])}% variance")
                     ax.set_ylabel(f"PC2: {int(var_exp[1])}% variance")
                     ax.set_title(f"PCA Plot (Top 500 VST Genes) - {method_name}")
-                    # Izgara çizgileri ekleyelim R'a benzesin
                     ax.grid(True, linestyle='--', alpha=0.6) 
                     
                     st.pyplot(fig_pca)
-                    st.info("💡 Not: Eğer noktaların yerleri R'daki ile ters ise (Sağ/Sol veya Yukarı/Aşağı), üstteki kutucukları işaretleyerek düzeltebilirsiniz. Matematiksel sonuç değişmez.")
+                    st.info("💡 Not: Eğer noktaların yerleri R'daki ile ters ise (Ayna Görüntüsü), üstteki kutucukları işaretleyerek düzeltebilirsiniz.")
                     download_buttons_for_plot(fig_pca, f"PCA_{method_name}")
                     plt.close(fig_pca)
 
@@ -227,11 +223,63 @@ if st.session_state.processed:
                     c1, c2 = st.columns(2)
                     grps = metadata[design_col].unique()
                     
-                    def_idx_ref = 0
-                    if ref_group in grps: def_idx_ref = list(grps).index(ref_group)
-                    
                     test_opts = [g for g in grps if g != ref_group]
                     g_test = c1.selectbox(f"Test Grubu ({method_name})", test_opts, key=f"t_{method_name}")
                     g_ref = c2.text_input(f"Referans Grup", value=ref_group, disabled=True, key=f"r_{method_name}")
                     
-                    if st.button(f"Karşılaştır: {g_test} vs {g_ref}", key=f"b
+                    # HATA DÜZELTME: SyntaxError burada oluyordu, f-string'i güvenli hale getirdim.
+                    btn_label = f"Karşılaştır: {g_test} vs {g_ref}"
+                    btn_key = f"b_{method_name}"
+                    
+                    if st.button(btn_label, key=btn_key):
+                        res_df = run_contrast_analysis(dds, g_test, g_ref, design_col)
+                        res_df = add_interpretation(res_df, lfc_cut, padj_cut)
+                        
+                        colors = {"GUCLU ARTIS (UP)": "blue", "GUCLU AZALIS (DOWN)": "red", 
+                                  "Hafif Artis": "lightblue", "Hafif Azalis": "salmon", 
+                                  "Degisim Yok / Anlamsiz": "grey"}
+                        
+                        fig_vol, ax = plt.subplots(figsize=(8, 6))
+                        sns.scatterplot(data=res_df, x='log2FoldChange', y=-np.log10(res_df['padj']), 
+                                        hue='Yorum', palette=colors, alpha=0.7, ax=ax)
+                        ax.axvline(lfc_cut, ls="--", c="black"); ax.axvline(-lfc_cut, ls="--", c="black")
+                        ax.axhline(-np.log10(padj_cut), ls="--", c="black")
+                        ax.set_title(f"{g_test} vs {g_ref}")
+                        ax.grid(True, linestyle='--', alpha=0.3)
+                        st.pyplot(fig_vol)
+                        download_buttons_for_plot(fig_vol, f"Volcano_{method_name}")
+                        plt.close(fig_vol)
+                        st.download_button(f"📥 İndir CSV", res_df.to_csv().encode('utf-8'), f"Res_{method_name}.csv", "text/csv")
+
+                # --- 3. HEATMAP ---
+                with t3:
+                    targets = []
+                    if file_genes:
+                        file_genes.seek(0)
+                        targets = [line.decode("utf-8").strip() for line in file_genes]
+                    if not targets:
+                        targets = norm_counts.var(axis=0).sort_values(ascending=False).head(50).index.tolist()
+                        st.info("Top 50 değişken gen (Varyans) kullanılıyor.")
+                    
+                    mat = norm_counts[targets].T
+                    if not mat.empty:
+                        # Bireysel
+                        st.subheader("Bireysel Heatmap")
+                        fig_ind = sns.clustermap(mat, z_score=0, cmap="vlag", col_cluster=False, figsize=(6,8))
+                        st.pyplot(fig_ind)
+                        download_buttons_for_plot(fig_ind, f"Heatmap_Ind_{method_name}")
+                        plt.close(fig_ind.fig)
+                        
+                        # Ortalama
+                        st.subheader("Ortalama Heatmap")
+                        mat_sub = norm_counts[targets]
+                        mat_sub['grp'] = metadata[design_col]
+                        grp_mean = mat_sub.groupby('grp').mean().T
+                        # Z-score scale
+                        grp_mean_scaled = grp_mean.apply(lambda x: (x - x.mean()) / x.std(), axis=1).fillna(0)
+                        
+                        fig_avg, ax = plt.subplots(figsize=(6,6))
+                        sns.heatmap(grp_mean_scaled, cmap="vlag", center=0, ax=ax)
+                        st.pyplot(fig_avg)
+                        download_buttons_for_plot(fig_avg, f"Heatmap_Avg_{method_name}")
+                        plt.close(fig_avg)
