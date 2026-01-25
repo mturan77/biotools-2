@@ -10,16 +10,18 @@ import io
 
 # --- SAYFA AYARLARI ---
 st.set_page_config(page_title="RNA-Seq Final", layout="wide")
-st.title("🧬 RNA-Seq Analiz Hattı (Stabil Versiyon)")
+st.title("🧬 RNA-Seq Analiz Hattı (Hatasız Stabil Versiyon)")
 
 # --- OTURUM YÖNETİMİ (Session State) ---
-# Analiz sonuçlarını hafızada tutmak için gerekli
 if 'hisat_dds' not in st.session_state:
     st.session_state.hisat_dds = None
 if 'salmon_dds' not in st.session_state:
     st.session_state.salmon_dds = None
 if 'processed' not in st.session_state:
     st.session_state.processed = False
+# HATA DÜZELTME: Tasarım sütununu (condition) burada saklayacağız
+if 'design_col' not in st.session_state:
+    st.session_state.design_col = None
 
 # --- YARDIMCI FONKSİYONLAR ---
 
@@ -39,7 +41,6 @@ def download_buttons_for_plot(fig, filename_prefix):
         st.download_button("📄 PDF", save_plot_to_memory(fig, "pdf"), f"{filename_prefix}.pdf", "application/pdf", use_container_width=True)
 
 def add_interpretation(df, lfc_limit, padj_limit):
-    # R ile aynı mantık
     conditions = [
         (df['log2FoldChange'] > lfc_limit) & (df['padj'] < padj_limit),
         (df['log2FoldChange'] < -lfc_limit) & (df['padj'] < padj_limit),
@@ -51,7 +52,6 @@ def add_interpretation(df, lfc_limit, padj_limit):
     return df
 
 def run_deseq_fit(counts_df, samples_df, design_col, ref_level, min_cnt):
-    """ DESeq2 Modelini Kurar """
     # 1. Kesişim Al
     common = list(set(counts_df.columns) & set(samples_df.index))
     if not common: return None, "Samples ve Counts arasında ortak örnek yok!"
@@ -66,13 +66,13 @@ def run_deseq_fit(counts_df, samples_df, design_col, ref_level, min_cnt):
     genes_keep = counts_T.columns[counts_T.sum(axis=0) >= min_cnt]
     counts_T = counts_T[genes_keep]
     
-    # 4. Modeli Kur (Reference Level Önemli!)
+    # 4. Modeli Kur
     try:
         inference = DeseqDataSet(
             counts=counts_T, 
             metadata=samples_df, 
             design_factors=design_col,
-            ref_level=[design_col, ref_level], # R sonuçlarıyla eşleşmesi için kritik!
+            ref_level=[design_col, ref_level],
             quiet=True
         )
         inference.deseq2()
@@ -81,13 +81,12 @@ def run_deseq_fit(counts_df, samples_df, design_col, ref_level, min_cnt):
         return None, str(e)
 
 def run_contrast_analysis(dds, g1, g2, design_col):
-    # Contrast: Test Grubu (g1) vs Referans Grubu (g2)
     stat_res = DeseqStats(dds, contrast=[design_col, g1, g2], quiet=True)
     stat_res.summary()
     return stat_res.results_df
 
 def get_norm_counts(dds):
-    # Versiyon hatasını önlemek için güvenli normalizasyon
+    # Güvenli Normalizasyon (Versiyon hatalarına karşı)
     if hasattr(dds, 'layers') and 'log1norm' in dds.layers:
         data = dds.layers['log1norm']
     elif hasattr(dds, 'layers') and 'normed_counts' in dds.layers:
@@ -112,24 +111,21 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("2. Kritik Ayarlar")
     
-    # Referans Seviyesi Seçimi (Sonuçların doğruluğu için)
-    ref_group = st.text_input("Referans Grup Adı (Örn: Control)", value="Control", 
-                              help="Samples dosyanızdaki 'condition' sütununda kontrol grubunuzun adı tam olarak neyse buraya yazın.")
+    ref_group = st.text_input("Referans Grup Adı", value="Control", 
+                              help="Samples dosyanızdaki kontrol grubunun tam adı.")
     
     padj_cut = st.number_input("P-adj Cutoff", 0.0, 1.0, 0.05, 0.01)
     lfc_cut = st.number_input("Log2FC Cutoff", 0.0, 10.0, 1.0, 0.5)
     min_count = st.number_input("Min Count", 0, 100, 10)
     
-    # Butona basınca session state'i temizle ki yeniden çalışsın
     if st.button("Analizi Başlat", type="primary"):
-        st.session_state.processed = False # Reset
+        st.session_state.processed = False
         st.session_state.run_trigger = True
     else:
         st.session_state.run_trigger = False
 
 # --- ANA AKIŞ ---
 
-# 1. ANALİZ TETİKLEME (Sadece butona basınca çalışır)
 if st.session_state.run_trigger:
     if not file_samples:
         st.error("Samples dosyası yüklenmedi!")
@@ -142,25 +138,25 @@ if st.session_state.run_trigger:
             if "condition" not in samples_data.columns: design_col = samples_data.columns[0]
             samples_data[design_col] = samples_data[design_col].astype(str)
             
-            # Referans grup kontrolü
+            # HATA DÜZELTME: Bulduğumuz sütun adını hafızaya kaydediyoruz
+            st.session_state.design_col = design_col
+            
             unique_groups = samples_data[design_col].unique()
             if ref_group not in unique_groups:
-                st.error(f"HATA: Yazdığınız referans grup ('{ref_group}') samples dosyasında bulunamadı! Mevcut gruplar: {unique_groups}")
+                st.error(f"Referans grup ('{ref_group}') bulunamadı! Mevcut: {unique_groups}")
                 st.stop()
             
             with st.status("Analiz Yapılıyor... Lütfen bekleyin...", expanded=True) as status:
                 
-                # HISAT Analizi
                 if file_hisat:
-                    st.write("HISAT2 verisi işleniyor...")
+                    st.write("HISAT2 işleniyor...")
                     counts = pd.read_csv(file_hisat, index_col=0)
                     dds, err = run_deseq_fit(counts, samples_data, design_col, ref_group, min_count)
                     if err: st.error(f"HISAT Hatası: {err}")
                     else: st.session_state.hisat_dds = dds
                 
-                # SALMON Analizi
                 if file_salmon:
-                    st.write("SALMON verisi işleniyor...")
+                    st.write("SALMON işleniyor...")
                     counts = pd.read_csv(file_salmon, index_col=0)
                     dds, err = run_deseq_fit(counts, samples_data, design_col, ref_group, min_count)
                     if err: st.error(f"SALMON Hatası: {err}")
@@ -172,13 +168,8 @@ if st.session_state.run_trigger:
         except Exception as e:
             st.error(f"Genel Hata: {e}")
 
-# 2. SONUÇLARI GÖSTERME (Sayfa yenilense de gitmez)
 if st.session_state.processed:
     
-    # Metadata'yı tekrar yüklemeye gerek yok, session'dan alabiliriz ama basit olsun diye tekrar okuyoruz
-    # (Dosya objesi sıfırlandığı için en temizi dds içinden almak)
-    
-    tabs = []
     titles = []
     if st.session_state.hisat_dds: titles.append("📂 HISAT2 Sonuçları")
     if st.session_state.salmon_dds: titles.append("📂 SALMON Sonuçları")
@@ -189,23 +180,23 @@ if st.session_state.processed:
         
     tabs = st.tabs(titles)
     
-    # Hangi datayı işleyeceğimizi belirleyelim
     datasets = []
     if st.session_state.hisat_dds: datasets.append(("HISAT2", st.session_state.hisat_dds))
     if st.session_state.salmon_dds: datasets.append(("SALMON", st.session_state.salmon_dds))
     
     for i, (method_name, dds) in enumerate(datasets):
         with tabs[i]:
-            # Gerekli verileri dds içinden çek
             norm_counts = get_norm_counts(dds)
-            design_col = dds.design_factors[0] # condition
-            metadata = dds.obs # samples verisi burada saklı
             
-            st.success(f"✅ {method_name} Modeli Hazır. Grafikleri aşağıdan seçin.")
+            # HATA DÜZELTME: Artık dds.design_factors yerine hafızadan alıyoruz
+            design_col = st.session_state.design_col
+            metadata = dds.obs
+            
+            st.success(f"✅ {method_name} Modeli Hazır. Grafikleri seçin.")
             
             t1, t2, t3 = st.tabs(["📊 PCA", "🌋 Volcano & Tablo", "🔥 Heatmaps"])
             
-            # --- PCA ---
+            # PCA
             with t1:
                 pca = PCA(n_components=2)
                 pca_res = pca.fit_transform(norm_counts)
@@ -220,16 +211,15 @@ if st.session_state.processed:
                 ax.set_ylabel(f"PC2: {int(var_exp[1])}%")
                 st.pyplot(fig_pca)
                 download_buttons_for_plot(fig_pca, f"PCA_{method_name}")
-                plt.close(fig_pca) # Bellek temizliği
+                plt.close(fig_pca)
 
-            # --- VOLCANO ---
+            # Volcano
             with t2:
                 col_sel1, col_sel2 = st.columns(2)
                 gruplar = metadata[design_col].unique()
-                g1 = col_sel1.selectbox(f"{method_name} - Test Grubu", gruplar, index=0, key=f"g1_{method_name}")
-                g2 = col_sel2.selectbox(f"{method_name} - Referans Grup", gruplar, index=1 if len(gruplar)>1 else 0, key=f"g2_{method_name}")
+                g1 = col_sel1.selectbox(f"{method_name} - Test", gruplar, index=0, key=f"g1_{method_name}")
+                g2 = col_sel2.selectbox(f"{method_name} - Ref", gruplar, index=1 if len(gruplar)>1 else 0, key=f"g2_{method_name}")
                 
-                # Hesaplama butonu (Artık tüm sayfa değil sadece burası çalışır)
                 if st.button(f"Karşılaştır ({method_name})", key=f"btn_vol_{method_name}"):
                     res_df = run_contrast_analysis(dds, g1, g2, design_col)
                     res_df = add_interpretation(res_df, lfc_cut, padj_cut)
@@ -248,14 +238,11 @@ if st.session_state.processed:
                     download_buttons_for_plot(fig_vol, f"Volcano_{method_name}")
                     plt.close(fig_vol)
                     
-                    # CSV İndirme
-                    st.dataframe(res_df.head())
                     csv = res_df.to_csv().encode('utf-8')
-                    st.download_button(f"📥 Sonuçları İndir ({g1} vs {g2})", csv, f"Sonuc_{method_name}.csv", "text/csv")
+                    st.download_button(f"📥 İndir CSV ({g1} vs {g2})", csv, f"Sonuc_{method_name}.csv", "text/csv")
 
-            # --- HEATMAP ---
+            # Heatmap
             with t3:
-                # Gen listesi oku
                 target_genes = []
                 if file_genes:
                     file_genes.seek(0)
@@ -263,12 +250,12 @@ if st.session_state.processed:
                 
                 if not target_genes:
                     target_genes = norm_counts.var(axis=0).sort_values(ascending=False).head(50).index.tolist()
-                    st.info("Top 50 değişken gen gösteriliyor.")
+                    st.info("Top 50 değişken gen (Varyans) kullanılıyor.")
                 
                 mat_subset = norm_counts[target_genes].T
                 
                 if not mat_subset.empty:
-                    # Bireysel Heatmap
+                    # Bireysel
                     st.subheader("Bireysel Heatmap")
                     fig_ind = sns.clustermap(mat_subset, z_score=0, cmap="vlag", col_cluster=False, figsize=(6, 8))
                     st.pyplot(fig_ind)
@@ -277,13 +264,12 @@ if st.session_state.processed:
                     
                     st.divider()
                     
-                    # Ortalama Heatmap
+                    # Ortalama
                     st.subheader("Ortalama Heatmap")
                     norm_sub = norm_counts[target_genes]
                     norm_sub['condition'] = metadata[design_col]
                     grouped_mean = norm_sub.groupby('condition').mean().T
                     
-                    # Z-score scale
                     grouped_mean_scaled = grouped_mean.apply(lambda x: (x - x.mean()) / x.std(), axis=1).fillna(0)
                     
                     fig_avg, ax = plt.subplots(figsize=(6, 6))
@@ -293,4 +279,4 @@ if st.session_state.processed:
                     plt.close(fig_avg)
 
 else:
-    st.info("👈 Lütfen sol menüden dosyaları yükleyip 'Analizi Başlat'a basın.")
+    st.info("👈 Dosyaları yükleyin ve 'Analizi Başlat'a basın.")
