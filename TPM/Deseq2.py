@@ -10,7 +10,7 @@ import io
 
 # --- SAYFA AYARLARI ---
 st.set_page_config(page_title="RNA-Seq Final", layout="wide")
-st.title("🧬 RNA-Seq Analiz Hattı (Hızlı Ekran + HQ İndirme)")
+st.title("🧬 RNA-Seq Analiz Hattı (Final)")
 
 # --- OTURUM YÖNETİMİ ---
 if 'hisat_dds' not in st.session_state: st.session_state.hisat_dds = None
@@ -18,23 +18,18 @@ if 'salmon_dds' not in st.session_state: st.session_state.salmon_dds = None
 if 'processed' not in st.session_state: st.session_state.processed = False
 if 'design_col' not in st.session_state: st.session_state.design_col = None
 
-# --- YARDIMCI FONKSİYONLAR (HQ İNDİRME) ---
+# --- HQ İNDİRME FONKSİYONLARI ---
 def save_plot_high_quality(fig, format="png"):
-    """
-    Ekrana çizilenden bağımsız olarak, 
-    grafiği bellekte 300 DPI (Yüksek Kalite) ile oluşturur.
-    """
     buf = io.BytesIO()
-    # bbox_inches='tight' kenar boşluklarını kırpar, dpi=300 baskı kalitesidir
+    # dpi=300: Baskı kalitesi (Yüksek Çözünürlük)
     fig.savefig(buf, format=format, bbox_inches="tight", dpi=300)
     buf.seek(0)
     return buf
 
 def download_buttons_for_plot(fig, filename_prefix):
-    """ İndirme butonları (Yüksek Kalite) """
     col1, col2, col3 = st.columns([1, 1, 1])
     with col1: 
-        st.download_button("📷 PNG (300 DPI)", save_plot_high_quality(fig, "png"), f"{filename_prefix}.png", "image/png")
+        st.download_button("📷 PNG (HQ)", save_plot_high_quality(fig, "png"), f"{filename_prefix}.png", "image/png")
     with col2: 
         st.download_button("✒️ SVG (Vektör)", save_plot_high_quality(fig, "svg"), f"{filename_prefix}.svg", "image/svg+xml")
     with col3: 
@@ -76,12 +71,12 @@ def run_deseq_fit(counts_df, samples_df, design_col, ref_level, min_cnt):
         )
         inference.deseq2()
         
-        # --- VST HESAPLAMA (R Eşleşmesi İçin) ---
+        # --- DÜZELTME BURADA ---
+        # 'blind' parametresi kaldırıldı. PyDESeq2 artık bunu otomatik algılar.
         try:
-            # R kodunuzda vst(blind=FALSE) kullanılmıştı.
-            inference.vst(blind=False) 
-        except:
-            st.warning("VST hesaplanamadı, Log dönüşümü kullanılıyor.")
+            inference.vst()  # Argümansız çalıştırıyoruz
+        except Exception as vst_err:
+            st.warning(f"VST uyarısı: {vst_err}. Log dönüşümü kullanılıyor.")
         
         return inference, None
     except Exception as e:
@@ -186,50 +181,43 @@ if st.session_state.processed:
                 metadata = dds.obs
                 
                 st.success(f"✅ {method_name} Modeli Hazır.")
-                t1, t2, t3 = st.tabs(["📊 PCA (R-Like)", "🌋 Volcano", "🔥 Heatmap"])
+                t1, t2, t3 = st.tabs(["📊 PCA", "🌋 Volcano", "🔥 Heatmap"])
                 
-                # --- 1. PCA (R İLE BİREBİR MATEMATİK + KÜÇÜK GRAFİK) ---
+                # --- 1. PCA ---
                 with t1:
                     col_ctrl1, col_ctrl2 = st.columns(2)
                     inv_x = col_ctrl1.checkbox(f"X'i Ters Çevir - {method_name}", value=False)
                     inv_y = col_ctrl2.checkbox(f"Y'yi Ters Çevir - {method_name}", value=False)
                     
-                    # R plotPCA Mantığı:
-                    # 1. Varyansı hesapla (Sample variance)
+                    # R Mantığı
                     variances = norm_counts.var(axis=0)
-                    # 2. En yüksek varyanslı 500 geni al
                     top_500_genes = variances.sort_values(ascending=False).head(500).index
                     pca_input = norm_counts[top_500_genes]
                     
-                    # 3. PCA Hesapla
                     pca = PCA(n_components=2)
                     pca_res = pca.fit_transform(pca_input)
                     var_exp = pca.explained_variance_ratio_ * 100
                     
-                    # 4. Yön Ayarı
                     if inv_x: pca_res[:, 0] = pca_res[:, 0] * -1
                     if inv_y: pca_res[:, 1] = pca_res[:, 1] * -1
                     
                     pca_df = pd.DataFrame(pca_res, columns=["PC1", "PC2"], index=norm_counts.index)
                     pca_df['condition'] = metadata[design_col]
                     
-                    # 5. ÇİZİM (EKRAN İÇİN KÜÇÜK BOYUT)
-                    # figsize=(5, 4) ekran için ideal, hızlı render alır.
-                    # İndirirken 300 DPI olacağı için sorun yok.
-                    fig_pca, ax = plt.subplots(figsize=(5, 4)) 
+                    # Ekran için küçük boyut (Hız için)
+                    fig_pca, ax = plt.subplots(figsize=(6, 5)) 
                     sns.scatterplot(data=pca_df, x="PC1", y="PC2", hue="condition", s=100, ax=ax, alpha=0.9)
                     
                     ax.set_xlabel(f"PC1: {int(var_exp[0])}% variance")
                     ax.set_ylabel(f"PC2: {int(var_exp[1])}% variance")
-                    ax.set_title(f"PCA (Top 500 Genes)")
+                    ax.set_title(f"PCA (Top 500 Genes) - {method_name}")
                     ax.grid(True, linestyle='--', alpha=0.5)
-                    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0.)
                     
                     col_plot, col_dl = st.columns([3, 1])
                     with col_plot:
-                        st.pyplot(fig_pca, use_container_width=False) # Ekrana sığdır ama dev yapma
+                        st.pyplot(fig_pca, use_container_width=False)
                     with col_dl:
-                        st.markdown("**İndir:**")
+                        st.markdown("**İndir (HQ):**")
                         download_buttons_for_plot(fig_pca, f"PCA_{method_name}")
                     plt.close(fig_pca)
 
@@ -237,7 +225,6 @@ if st.session_state.processed:
                 with t2:
                     c1, c2 = st.columns(2)
                     grps = metadata[design_col].unique()
-                    
                     test_opts = [g for g in grps if g != ref_group]
                     g_test = c1.selectbox(f"Test Grubu ({method_name})", test_opts, key=f"t_{method_name}")
                     g_ref = c2.text_input(f"Referans", value=ref_group, disabled=True, key=f"r_{method_name}")
@@ -251,7 +238,6 @@ if st.session_state.processed:
                                   "Hafif Artis": "lightblue", "Hafif Azalis": "salmon", 
                                   "Degisim Yok / Anlamsiz": "grey"}
                         
-                        # Ekran için küçük boyut
                         fig_vol, ax = plt.subplots(figsize=(6, 5))
                         sns.scatterplot(data=res_df, x='log2FoldChange', y=-np.log10(res_df['padj']), 
                                         hue='Yorum', palette=colors, alpha=0.7, ax=ax, legend=False)
@@ -263,7 +249,7 @@ if st.session_state.processed:
                         col_v_plot, col_v_dl = st.columns([3, 1])
                         with col_v_plot: st.pyplot(fig_vol, use_container_width=False)
                         with col_v_dl: 
-                            st.markdown("**İndir:**")
+                            st.markdown("**İndir (HQ):**")
                             download_buttons_for_plot(fig_vol, f"Volcano_{method_name}")
                         plt.close(fig_vol)
                         st.download_button(f"📥 CSV İndir", res_df.to_csv().encode('utf-8'), f"Res_{method_name}.csv", "text/csv")
@@ -282,13 +268,12 @@ if st.session_state.processed:
                     if not mat.empty:
                         # Bireysel Heatmap
                         st.subheader("Bireysel Heatmap")
-                        # Ekran için küçük
-                        fig_ind = sns.clustermap(mat, z_score=0, cmap="vlag", col_cluster=False, figsize=(5, 6))
+                        fig_ind = sns.clustermap(mat, z_score=0, cmap="vlag", col_cluster=False, figsize=(6, 7))
                         
                         col_h1, col_h2 = st.columns([3, 1])
                         with col_h1: st.pyplot(fig_ind)
                         with col_h2: 
-                            st.markdown("**İndir:**")
+                            st.markdown("**İndir (HQ):**")
                             download_buttons_for_plot(fig_ind, f"Heatmap_Ind_{method_name}")
                         plt.close(fig_ind.fig)
                         
@@ -301,12 +286,12 @@ if st.session_state.processed:
                         grp_mean = mat_sub.groupby('grp').mean().T
                         grp_mean_scaled = grp_mean.apply(lambda x: (x - x.mean()) / x.std(), axis=1).fillna(0)
                         
-                        fig_avg, ax = plt.subplots(figsize=(5, 5))
+                        fig_avg, ax = plt.subplots(figsize=(6, 6))
                         sns.heatmap(grp_mean_scaled, cmap="vlag", center=0, ax=ax)
                         
                         col_ha1, col_ha2 = st.columns([3, 1])
                         with col_ha1: st.pyplot(fig_avg, use_container_width=False)
                         with col_ha2: 
-                            st.markdown("**İndir:**")
+                            st.markdown("**İndir (HQ):**")
                             download_buttons_for_plot(fig_avg, f"Heatmap_Avg_{method_name}")
                         plt.close(fig_avg)
