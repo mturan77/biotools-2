@@ -69,11 +69,12 @@ def run_deseq_fit(counts_df, samples_df, design_col, ref_level, min_cnt):
         # DESeq2 Analizi
         inference.deseq2()
         
-        # --- ÖNEMLİ: VST HESAPLAMA (R Eşleşmesi İçin) ---
+        # --- VST HESAPLAMA (R ile Eşleşme İçin Kritik) ---
+        # Log yerine VST zorluyoruz. Hata verirse görelim.
         try:
             inference.vst(blind=False) 
-        except:
-            st.warning("VST hesaplanamadı, Log dönüşümü kullanılıyor.")
+        except Exception as vst_err:
+            st.error(f"VST Dönüşümü Hatası: {vst_err}. Log dönüşümü kullanılacak (Bu varyans oranlarını düşürebilir).")
         
         return inference, None
     except Exception as e:
@@ -85,7 +86,7 @@ def run_contrast_analysis(dds, g1, g2, design_col):
     return stat_res.results_df
 
 def get_norm_counts(dds):
-    # R İLE EŞLEŞMEK İÇİN VST ÖNCELİKLİ
+    # R İLE EŞLEŞMEK İÇİN VST KULLAN
     if hasattr(dds, 'layers') and 'vst_counts' in dds.layers:
         data = dds.layers['vst_counts']
     elif hasattr(dds, 'layers') and 'log1norm' in dds.layers:
@@ -186,9 +187,11 @@ if st.session_state.processed:
                     inv_x = col_ctrl1.checkbox(f"X Eksenini Ters Çevir (Ayna) - {method_name}", value=False)
                     inv_y = col_ctrl2.checkbox(f"Y Eksenini Ters Çevir (Ayna) - {method_name}", value=False)
                     
-                    # 1. Varyansı Hesapla
+                    # 1. R ile Birebir Varyans Hesabı
+                    # R'da rowVars kullanılır. Pandas var() fonksiyonu varsayılan olarak ddof=1 (sample variance) kullanır, bu R ile aynıdır.
                     variances = norm_counts.var(axis=0)
-                    # 2. En yüksek varyansa sahip 500 geni seç (R varsayılanı budur)
+                    
+                    # 2. En yüksek varyansa sahip 500 geni seç (R DESeq2 varsayılanı: ntop=500)
                     top_500_genes = variances.sort_values(ascending=False).head(500).index
                     pca_input = norm_counts[top_500_genes]
                     
@@ -210,7 +213,7 @@ if st.session_state.processed:
                     
                     ax.set_xlabel(f"PC1: {int(var_exp[0])}% variance")
                     ax.set_ylabel(f"PC2: {int(var_exp[1])}% variance")
-                    ax.set_title(f"PCA Plot (Top 500 VST Genes) - {method_name}")
+                    ax.set_title(f"PCA Plot (Top 500 Genes) - {method_name}")
                     ax.grid(True, linestyle='--', alpha=0.6) 
                     
                     st.pyplot(fig_pca)
@@ -227,11 +230,9 @@ if st.session_state.processed:
                     g_test = c1.selectbox(f"Test Grubu ({method_name})", test_opts, key=f"t_{method_name}")
                     g_ref = c2.text_input(f"Referans Grup", value=ref_group, disabled=True, key=f"r_{method_name}")
                     
-                    # HATA DÜZELTME: SyntaxError burada oluyordu, f-string'i güvenli hale getirdim.
-                    btn_label = f"Karşılaştır: {g_test} vs {g_ref}"
+                    # DÜZELTİLDİ: SyntaxError giderildi (String düzgün kapatıldı)
                     btn_key = f"b_{method_name}"
-                    
-                    if st.button(btn_label, key=btn_key):
+                    if st.button(f"Karşılaştır: {g_test} vs {g_ref}", key=btn_key):
                         res_df = run_contrast_analysis(dds, g_test, g_ref, design_col)
                         res_df = add_interpretation(res_df, lfc_cut, padj_cut)
                         
