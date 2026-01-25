@@ -10,7 +10,7 @@ import io
 
 # --- SAYFA AYARLARI ---
 st.set_page_config(page_title="RNA-Seq Final", layout="wide")
-st.title("🧬 RNA-Seq Analiz Hattı (Final)")
+st.title("🧬 RNA-Seq Analiz Hattı (Tam R Uyumu)")
 
 # --- OTURUM YÖNETİMİ ---
 if 'hisat_dds' not in st.session_state: st.session_state.hisat_dds = None
@@ -21,7 +21,7 @@ if 'design_col' not in st.session_state: st.session_state.design_col = None
 # --- HQ İNDİRME FONKSİYONLARI ---
 def save_plot_high_quality(fig, format="png"):
     buf = io.BytesIO()
-    # dpi=300: Baskı kalitesi (Yüksek Çözünürlük)
+    # dpi=300: Baskı kalitesi
     fig.savefig(buf, format=format, bbox_inches="tight", dpi=300)
     buf.seek(0)
     return buf
@@ -71,12 +71,12 @@ def run_deseq_fit(counts_df, samples_df, design_col, ref_level, min_cnt):
         )
         inference.deseq2()
         
-        # --- DÜZELTME BURADA ---
-        # 'blind' parametresi kaldırıldı. PyDESeq2 artık bunu otomatik algılar.
+        # --- VST ZORLAMA ---
+        # blind parametresi kaldırıldığı için argümansız çağırıyoruz.
         try:
-            inference.vst()  # Argümansız çalıştırıyoruz
+            inference.vst() 
         except Exception as vst_err:
-            st.warning(f"VST uyarısı: {vst_err}. Log dönüşümü kullanılıyor.")
+            st.warning(f"VST başarısız ({vst_err}), mecburen Log dönüşümü yapılıyor.")
         
         return inference, None
     except Exception as e:
@@ -181,19 +181,40 @@ if st.session_state.processed:
                 metadata = dds.obs
                 
                 st.success(f"✅ {method_name} Modeli Hazır.")
-                t1, t2, t3 = st.tabs(["📊 PCA", "🌋 Volcano", "🔥 Heatmap"])
+                t1, t2, t3 = st.tabs(["📊 PCA (Özel/Genel)", "🌋 Volcano", "🔥 Heatmap"])
                 
                 # --- 1. PCA ---
                 with t1:
                     col_ctrl1, col_ctrl2 = st.columns(2)
-                    inv_x = col_ctrl1.checkbox(f"X'i Ters Çevir - {method_name}", value=False)
-                    inv_y = col_ctrl2.checkbox(f"Y'yi Ters Çevir - {method_name}", value=False)
+                    inv_x = col_ctrl1.checkbox(f"X Ters Çevir - {method_name}", value=False)
+                    inv_y = col_ctrl2.checkbox(f"Y Ters Çevir - {method_name}", value=False)
                     
-                    # R Mantığı
-                    variances = norm_counts.var(axis=0)
-                    top_500_genes = variances.sort_values(ascending=False).head(500).index
-                    pca_input = norm_counts[top_500_genes]
+                    # GEN LİSTESİ KONTROLÜ (PCA İÇİN)
+                    pca_title = ""
+                    pca_input = None
                     
+                    # Kullanıcı listesi var mı?
+                    targets = []
+                    if file_genes:
+                        file_genes.seek(0)
+                        targets = [line.decode("utf-8").strip() for line in file_genes]
+                        # Listede olup veride de olanları filtrele
+                        targets = [t for t in targets if t in norm_counts.columns]
+                    
+                    if targets:
+                        # Eğer kullanıcı liste verdiyse, PCA SADECE ONA GÖRE ÇİZİLİR
+                        pca_input = norm_counts[targets]
+                        pca_title = f"PCA (User Gene List: {len(targets)} Genes)"
+                        st.info(f"PCA Grafiği yüklediğiniz {len(targets)} gene göre çizildi.")
+                    else:
+                        # Liste yoksa standart R (Top 500 varyans)
+                        variances = norm_counts.var(axis=0)
+                        top_500_genes = variances.sort_values(ascending=False).head(500).index
+                        pca_input = norm_counts[top_500_genes]
+                        pca_title = f"PCA (Top 500 Genes - Default)"
+                        st.info("Gen listesi yüklenmediği için standart Top 500 gene göre çizildi.")
+                    
+                    # PCA Hesapla
                     pca = PCA(n_components=2)
                     pca_res = pca.fit_transform(pca_input)
                     var_exp = pca.explained_variance_ratio_ * 100
@@ -204,14 +225,15 @@ if st.session_state.processed:
                     pca_df = pd.DataFrame(pca_res, columns=["PC1", "PC2"], index=norm_counts.index)
                     pca_df['condition'] = metadata[design_col]
                     
-                    # Ekran için küçük boyut (Hız için)
-                    fig_pca, ax = plt.subplots(figsize=(6, 5)) 
+                    # EKRAN İÇİN KÜÇÜK GRAFİK (5x4 inch)
+                    fig_pca, ax = plt.subplots(figsize=(5, 4)) 
                     sns.scatterplot(data=pca_df, x="PC1", y="PC2", hue="condition", s=100, ax=ax, alpha=0.9)
                     
                     ax.set_xlabel(f"PC1: {int(var_exp[0])}% variance")
                     ax.set_ylabel(f"PC2: {int(var_exp[1])}% variance")
-                    ax.set_title(f"PCA (Top 500 Genes) - {method_name}")
+                    ax.set_title(f"{pca_title} - {method_name}")
                     ax.grid(True, linestyle='--', alpha=0.5)
+                    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
                     
                     col_plot, col_dl = st.columns([3, 1])
                     with col_plot:
@@ -256,19 +278,24 @@ if st.session_state.processed:
 
                 # --- 3. HEATMAP ---
                 with t3:
-                    targets = []
+                    # Heatmap her zaman listeye veya Top 50'ye göre çizilir
+                    heat_targets = []
                     if file_genes:
                         file_genes.seek(0)
-                        targets = [line.decode("utf-8").strip() for line in file_genes]
-                    if not targets:
-                        targets = norm_counts.var(axis=0).sort_values(ascending=False).head(50).index.tolist()
-                        st.info("Top 50 değişken gen gösteriliyor.")
+                        heat_targets = [line.decode("utf-8").strip() for line in file_genes]
+                        heat_targets = [t for t in heat_targets if t in norm_counts.columns]
+
+                    if not heat_targets:
+                        heat_targets = norm_counts.var(axis=0).sort_values(ascending=False).head(50).index.tolist()
+                        st.info("Heatmap için Top 50 değişken gen kullanılıyor.")
+                    else:
+                        st.info(f"Heatmap için yüklenen {len(heat_targets)} gen kullanılıyor.")
                     
-                    mat = norm_counts[targets].T
+                    mat = norm_counts[heat_targets].T
                     if not mat.empty:
                         # Bireysel Heatmap
                         st.subheader("Bireysel Heatmap")
-                        fig_ind = sns.clustermap(mat, z_score=0, cmap="vlag", col_cluster=False, figsize=(6, 7))
+                        fig_ind = sns.clustermap(mat, z_score=0, cmap="vlag", col_cluster=False, figsize=(5, 6))
                         
                         col_h1, col_h2 = st.columns([3, 1])
                         with col_h1: st.pyplot(fig_ind)
@@ -281,12 +308,12 @@ if st.session_state.processed:
                         
                         # Ortalama Heatmap
                         st.subheader("Ortalama Heatmap")
-                        mat_sub = norm_counts[targets]
+                        mat_sub = norm_counts[heat_targets]
                         mat_sub['grp'] = metadata[design_col]
                         grp_mean = mat_sub.groupby('grp').mean().T
                         grp_mean_scaled = grp_mean.apply(lambda x: (x - x.mean()) / x.std(), axis=1).fillna(0)
                         
-                        fig_avg, ax = plt.subplots(figsize=(6, 6))
+                        fig_avg, ax = plt.subplots(figsize=(5, 5))
                         sns.heatmap(grp_mean_scaled, cmap="vlag", center=0, ax=ax)
                         
                         col_ha1, col_ha2 = st.columns([3, 1])
