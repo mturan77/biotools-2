@@ -10,7 +10,7 @@ import io
 
 # --- SAYFA AYARLARI ---
 st.set_page_config(page_title="RNA-Seq Final", layout="wide")
-st.title("🧬 RNA-Seq Analiz Hattı (Hatasız Stabil Versiyon)")
+st.title("🧬 RNA-Seq Analiz Hattı")
 
 # --- OTURUM YÖNETİMİ (Session State) ---
 if 'hisat_dds' not in st.session_state:
