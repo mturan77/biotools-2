@@ -10,7 +10,7 @@ import io
 
 # Sayfa Ayarları
 st.set_page_config(page_title="RNA-Seq Full Analiz", layout="wide")
-st.title("🧬 RNA-Seq Analiz Hattı: HISAT & SALMON (Hata Düzeltildi)")
+st.title("🧬 RNA-Seq Analiz Hattı: HISAT & SALMON")
 
 # --- 1. SIDEBAR ---
 with st.sidebar:
