@@ -12,28 +12,45 @@ from collections import defaultdict
 st.set_page_config(page_title="RNA-Seq Count Matrix Generator", layout="wide")
 
 st.title("🧬 RNA-Seq Count Matrix Oluşturucu")
-st.markdown("BAM ve Salmon çıktılarından ham sayım (Raw Counts) matrislerini oluşturur.")
+st.info("Bu uygulama dosyaları 'upload' etmez. Bilgisayarınızdaki klasör yolunu okuyarak çalışır.")
 
 # ==============================================================================
 # SIDEBAR AYARLARI
 # ==============================================================================
-st.sidebar.header("📂 Ayarlar ve Yollar")
+st.sidebar.header("📂 Klasör ve Dosya Yolları")
 
-# Varsayılan değerler (Senin kodundaki pathler)
+# Varsayılan değerler
 default_base_dir = "/home/mutu/Desktop/Musca-rpkm/6-TPM/"
 default_gff = os.path.join(default_base_dir, "Musca_veriler_yedek/Musca_domestica.gff3")
 
-BASE_DIR = st.sidebar.text_input("Ana Dizin (Base Dir)", value=default_base_dir)
-GFF_FILE = st.sidebar.text_input("GFF3 Dosya Yolu", value=default_gff)
+# 1. ANA KLASÖR GİRİŞİ (Folder Input)
+st.sidebar.markdown("### 1. Ana Çalışma Klasörü")
+BASE_DIR = st.sidebar.text_input("Klasör Yolunu Yapıştırın:", value=default_base_dir, help="BAM ve Quant dosyalarının bulunduğu ana klasör.")
 
-st.sidebar.subheader("🔍 Arama Desenleri")
-SEARCH_PATTERN_BAM = st.sidebar.text_input("BAM Arama Deseni", value="**/bam_files_final/*.bam")
-SEARCH_PATTERN_QUANT = st.sidebar.text_input("Salmon Arama Deseni", value="**/*_quant/quant.sf")
+# Klasör kontrolü (Validasyon)
+if os.path.isdir(BASE_DIR):
+    st.sidebar.success("✅ Klasör bulundu.")
+else:
+    st.sidebar.error("❌ Klasör bulunamadı! Lütfen yolu kontrol edin.")
+
+# 2. GFF DOSYASI GİRİŞİ
+st.sidebar.markdown("### 2. GFF Dosyası")
+GFF_FILE = st.sidebar.text_input("GFF Dosya Yolu:", value=default_gff)
+
+if os.path.exists(GFF_FILE):
+    st.sidebar.success("✅ GFF dosyası bulundu.")
+else:
+    st.sidebar.error("❌ GFF dosyası bulunamadı!")
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("🔍 Arama Ayarları")
+# Kullanıcı buraya klasör değil, klasör içindeki desen şablonunu giriyor
+SEARCH_PATTERN_BAM = st.sidebar.text_input("BAM Arama Deseni (Glob)", value="**/bam_files_final/*.bam")
+SEARCH_PATTERN_QUANT = st.sidebar.text_input("Salmon Arama Deseni (Glob)", value="**/*_quant/quant.sf")
 
 st.sidebar.subheader("⚙️ Analiz Modu")
 mode_selection = st.sidebar.radio("Hangi analiz yapılsın?", ("Her İkisi (3)", "Sadece HISAT/BAM (1)", "Sadece SALMON (2)"))
 
-# Modu sayıya çevir
 MODE = 3
 if "Sadece HISAT" in mode_selection: MODE = 1
 elif "Sadece SALMON" in mode_selection: MODE = 2
@@ -46,16 +63,15 @@ OUT_DIR_HISAT = os.path.join(BASE_DIR, "DESeq2_Input_HISAT_Verbose")
 OUT_DIR_SALMON = os.path.join(BASE_DIR, "DESeq2_Input_SALMON_Verbose")
 
 # ==============================================================================
-# YENİ ANALİZ / CACHE TEMİZLEME BUTONU
+# BUTONLAR
 # ==============================================================================
-if st.sidebar.button("🧹 Önbelleği Temizle / Yeni Analiz", type="primary"):
+if st.sidebar.button("🧹 Önbelleği Temizle / Sıfırla", type="primary"):
     st.cache_data.clear()
     st.cache_resource.clear()
-    st.success("Önbellek temizlendi! Sayfa yenileniyor...")
     st.rerun()
 
 # ==============================================================================
-# YARDIMCI SINIF VE FONKSİYONLAR
+# FONKSİYONLAR
 # ==============================================================================
 
 def normalize_id(s):
@@ -78,17 +94,13 @@ class GeneInterval:
         self.start = min(self.start, start)
         self.end = max(self.end, end)
 
-# GFF Okuma işlemini Cache'liyoruz (Hız için)
 @st.cache_data(show_spinner=False)
 def parse_gff_cached(gff_path):
-    if not os.path.exists(gff_path):
-        return None, None, f"GFF dosyası bulunamadı: {gff_path}"
-
+    # Bu fonksiyon sadece dosya yolu doğruysa çalışır
     genes = {} 
     tx2gene = {}
     rna_parent_map = {}
     unique_chroms = set()
-    log_messages = []
 
     try:
         with open(gff_path, "r") as f:
@@ -119,13 +131,11 @@ def parse_gff_cached(gff_path):
                         if gid not in genes: genes[gid] = GeneInterval(gid, chrom)
                         genes[gid].add_exon(start, end)
         
-        return genes, tx2gene, f"✅ GFF Okundu. Toplam Gen: {len(genes)}. Kromozomlar: {list(unique_chroms)[:5]}..."
+        return genes, tx2gene, f"✅ GFF Okundu. Toplam Gen: {len(genes)}."
     except Exception as e:
         return None, None, str(e)
 
-# ==============================================================================
-# BAM ANALİZİ (STREAMLIT UYUMLU)
-# ==============================================================================
+# BAM Process
 def process_bam_files(bam_files, genes_db):
     md_hisat = {}
     all_genes_h = set(genes_db.keys())
@@ -143,14 +153,12 @@ def process_bam_files(bam_files, genes_db):
         total_assigned_reads = 0
         
         try:
-            # Index kontrolü
             if not os.path.exists(bam_path + ".bai"):
                 pysam.index(bam_path)
             
             samfile = pysam.AlignmentFile(bam_path, "rb")
             bam_refs = set(samfile.references)
             
-            # Kromozom Eşleme Mantığı
             genes_by_chrom = defaultdict(list)
             for g in genes_db.values():
                 genes_by_chrom[g.chrom].append(g)
@@ -174,14 +182,11 @@ def process_bam_files(bam_files, genes_db):
                 samfile.close()
                 continue
 
-            # --- Sayım Döngüsü (Görselleştirilmiş) ---
-            # Tek bir dosya için inner progress bar
             file_progress = st.progress(0)
             total_chroms_to_scan = len(chrom_map)
             chrom_processed_count = 0
 
             for g_chrom, target_chrom in chrom_map.items():
-                # Performans için: Her kromozomda bar güncelleme
                 chrom_processed_count += 1
                 if chrom_processed_count % 10 == 0:
                     file_progress.progress(chrom_processed_count / total_chroms_to_scan)
@@ -211,7 +216,7 @@ def process_bam_files(bam_files, genes_db):
                             total_assigned_reads += cnt
                     except ValueError: continue
             
-            file_progress.empty() # Dosya bitince barı temizle
+            file_progress.empty()
             logs.append(f"✅ {base_name}: {total_assigned_reads} okuma atandı.")
             md_hisat[base_name.replace(".bam", "")] = counts
             samfile.close()
@@ -223,22 +228,18 @@ def process_bam_files(bam_files, genes_db):
     overall_progress.progress(1.0)
     status_text.text("BAM analizi tamamlandı.")
     
-    # DataFrame oluşturma
     df_h = pd.DataFrame(index=sorted(list(all_genes_h)))
     for s, c in md_hisat.items():
         df_h[s] = pd.Series(c).reindex(df_h.index, fill_value=0)
     
     return df_h.fillna(0).astype(int), logs
 
-# ==============================================================================
-# SALMON ANALİZİ (STREAMLIT UYUMLU)
-# ==============================================================================
-def process_salmon_files(quant_pattern, tx2gene):
-    full_pattern = os.path.join(BASE_DIR, quant_pattern)
+# Salmon Process
+def process_salmon_files(full_pattern, tx2gene):
     quant_files = glob.glob(full_pattern, recursive=True)
     
     if not quant_files:
-        return None, ["Salmon dosyası bulunamadı."]
+        return None, [f"Dosya bulunamadı. Aranan yol: {full_pattern}"]
 
     master_data = {}
     all_genes = set(tx2gene.values())
@@ -258,7 +259,7 @@ def process_salmon_files(quant_pattern, tx2gene):
             
             master_data[s_name] = grouped.to_dict()
             all_genes.update(grouped.index)
-            logs.append(f"🔹 {s_name}: {int(grouped.sum())} okuma işlendi.")
+            logs.append(f"🔹 {s_name}: {int(grouped.sum())} okuma.")
         except Exception as e:
             logs.append(f"🛑 HATA {s_name}: {e}")
 
@@ -269,18 +270,23 @@ def process_salmon_files(quant_pattern, tx2gene):
     return df_f.fillna(0).round().astype(int), logs
 
 # ==============================================================================
-# MAIN UYGULAMA AKIŞI
+# ANA AKIŞ
 # ==============================================================================
 
-# Başlat Butonu
 if st.button("🚀 Analizi Başlat", type="primary"):
     
-    if not os.path.exists(BASE_DIR):
-        st.error(f"Ana dizin bulunamadı: {BASE_DIR}")
+    # 1. Klasör Kontrolü
+    if not os.path.isdir(BASE_DIR):
+        st.error(f"🛑 HATA: Ana klasör yolu yanlış veya erişilemiyor:\n{BASE_DIR}")
+        st.stop()
+    
+    # 2. GFF Kontrolü
+    if not os.path.exists(GFF_FILE):
+        st.error(f"🛑 HATA: GFF dosyası bulunamadı:\n{GFF_FILE}")
         st.stop()
 
-    # 1. GFF Okuma
-    with st.spinner('GFF dosyası okunuyor...'):
+    # 3. GFF İşleme
+    with st.spinner('GFF dosyası işleniyor...'):
         gene_db, tx2gene, msg = parse_gff_cached(GFF_FILE)
     
     if gene_db is None:
@@ -289,50 +295,47 @@ if st.button("🚀 Analizi Başlat", type="primary"):
     else:
         st.info(msg)
 
-    # 2. HISAT/BAM Analizi
+    # 4. BAM Analizi
     if MODE == 1 or MODE == 3:
-        st.subheader("📊 HISAT/BAM Analiz Sonuçları")
+        st.subheader("📊 HISAT/BAM Analizi")
+        # Klasör + Desen birleştirme
         full_bam_pattern = os.path.join(BASE_DIR, SEARCH_PATTERN_BAM)
         bam_files = glob.glob(full_bam_pattern, recursive=True)
         
+        st.write(f"📂 Aranan Yol: `{full_bam_pattern}`")
+        
         if bam_files:
-            st.write(f"Bulunan BAM Dosyası Sayısı: {len(bam_files)}")
-            
-            with st.spinner("BAM dosyaları taranıyor (Bu işlem uzun sürebilir)..."):
+            st.success(f"📄 {len(bam_files)} adet BAM dosyası bulundu.")
+            with st.spinner("BAM dosyaları sayılıyor..."):
                 df_hisat, logs_hisat = process_bam_files(bam_files, gene_db)
             
-            # Logları Göster
-            with st.expander("BAM İşlem Logları (Tıkla Gör)", expanded=False):
+            with st.expander("Detaylı Loglar", expanded=False):
                 for l in logs_hisat: st.write(l)
             
-            # Önizleme ve İndirme
             st.dataframe(df_hisat.head())
             
             os.makedirs(OUT_DIR_HISAT, exist_ok=True)
             out_file_h = os.path.join(OUT_DIR_HISAT, "HISAT_Raw_Counts_Matrix_Verbose.csv")
             df_hisat.to_csv(out_file_h)
+            st.success(f"Kaydedildi: {out_file_h}")
             
-            st.success(f"HISAT Matrisi Kaydedildi: {out_file_h}")
-            st.download_button(
-                label="📥 HISAT CSV İndir",
-                data=df_hisat.to_csv().encode('utf-8'),
-                file_name="HISAT_Raw_Counts.csv",
-                mime='text/csv'
-            )
+            st.download_button("📥 BAM Sonuçlarını İndir (CSV)", df_hisat.to_csv().encode('utf-8'), "HISAT_Counts.csv", "text/csv")
         else:
-            st.warning("⚠️ Belirtilen yolda BAM dosyası bulunamadı!")
+            st.error("⚠️ Hiç BAM dosyası bulunamadı! Arama desenini veya klasör yolunu kontrol edin.")
 
     st.markdown("---")
 
-    # 3. SALMON Analizi
+    # 5. SALMON Analizi
     if MODE == 2 or MODE == 3:
-        st.subheader("🐟 SALMON Analiz Sonuçları")
+        st.subheader("🐟 SALMON Analizi")
+        full_quant_pattern = os.path.join(BASE_DIR, SEARCH_PATTERN_QUANT)
+        st.write(f"📂 Aranan Yol: `{full_quant_pattern}`")
+        
         with st.spinner("Salmon dosyaları işleniyor..."):
-            df_salmon, logs_salmon = process_salmon_files(SEARCH_PATTERN_QUANT, tx2gene)
+            df_salmon, logs_salmon = process_salmon_files(full_quant_pattern, tx2gene)
         
         if df_salmon is not None:
-             # Logları Göster
-            with st.expander("Salmon İşlem Logları (Tıkla Gör)", expanded=False):
+            with st.expander("Detaylı Loglar", expanded=False):
                 for l in logs_salmon: st.write(l)
             
             st.dataframe(df_salmon.head())
@@ -340,16 +343,10 @@ if st.button("🚀 Analizi Başlat", type="primary"):
             os.makedirs(OUT_DIR_SALMON, exist_ok=True)
             out_file_s = os.path.join(OUT_DIR_SALMON, "SALMON_Raw_Counts_Matrix.csv")
             df_salmon.to_csv(out_file_s)
+            st.success(f"Kaydedildi: {out_file_s}")
             
-            st.success(f"SALMON Matrisi Kaydedildi: {out_file_s}")
-            st.download_button(
-                label="📥 SALMON CSV İndir",
-                data=df_salmon.to_csv().encode('utf-8'),
-                file_name="SALMON_Raw_Counts.csv",
-                mime='text/csv'
-            )
+            st.download_button("📥 SALMON Sonuçlarını İndir (CSV)", df_salmon.to_csv().encode('utf-8'), "SALMON_Counts.csv", "text/csv")
         else:
-            st.warning(logs_salmon[0])
+            st.error("⚠️ Salmon dosyası bulunamadı!")
 
     st.balloons()
-    st.success("Tüm işlemler başarıyla tamamlandı.")
