@@ -1,342 +1,355 @@
 import streamlit as st
+import os
+import glob
 import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
-import io
+import pysam
+import sys
+from collections import defaultdict
 
 # ==============================================================================
-# 1. AYARLAR VE STİL
+# SAYFA YAPILANDIRMASI
 # ==============================================================================
-st.set_page_config(page_title="RNA-Seq Analiz Hattı (Final V3)", layout="wide")
-st.title("🧬 RNA-Seq Analiz Hattı (DESeq2 Mantığı)")
+st.set_page_config(page_title="RNA-Seq Count Matrix Generator", layout="wide")
 
-st.markdown("""
-<style>
-    .stButton>button { width: 100%; border-radius: 5px; }
-    div[data-testid="stExpander"] div[role="button"] p { font-size: 1.1rem; font-weight: bold; }
-</style>
-""", unsafe_allow_html=True)
+st.title("🧬 RNA-Seq Count Matrix Oluşturucu")
+st.markdown("BAM ve Salmon çıktılarından ham sayım (Raw Counts) matrislerini oluşturur.")
 
 # ==============================================================================
-# 2. OTURUM YÖNETİMİ (Session State - Hata Düzeltildi)
+# SIDEBAR AYARLARI
 # ==============================================================================
-# AttributeError hatasını önlemek için tüm değişkenleri en başta tanımlıyoruz.
-if 'run_trigger' not in st.session_state: st.session_state.run_trigger = False
-if 'hisat_df' not in st.session_state: st.session_state.hisat_df = None
-if 'salmon_df' not in st.session_state: st.session_state.salmon_df = None
-if 'processed' not in st.session_state: st.session_state.processed = False
-if 'meta_df' not in st.session_state: st.session_state.meta_df = None
-if 'design_col' not in st.session_state: st.session_state.design_col = None
+st.sidebar.header("📂 Ayarlar ve Yollar")
 
-# ==============================================================================
-# 3. YARDIMCI FONKSİYONLAR
-# ==============================================================================
+# Varsayılan değerler (Senin kodundaki pathler)
+default_base_dir = "/home/mutu/Desktop/Musca-rpkm/6-TPM/"
+default_gff = os.path.join(default_base_dir, "Musca_veriler_yedek/Musca_domestica.gff3")
 
-def save_plot_hq(fig, format="png"):
-    """Grafikleri yüksek kalitede indirmek için buffer oluşturur."""
-    buf = io.BytesIO()
-    fig.savefig(buf, format=format, bbox_inches="tight", dpi=300)
-    buf.seek(0)
-    return buf
+BASE_DIR = st.sidebar.text_input("Ana Dizin (Base Dir)", value=default_base_dir)
+GFF_FILE = st.sidebar.text_input("GFF3 Dosya Yolu", value=default_gff)
 
-def calculate_size_factors_deseq_style(counts_df):
-    """
-    DESeq2 mantığına birebir uygun Size Factor hesaplar.
-    """
-    # 0 içeren satırları (genleri) geometrik ortalama hesabından çıkar
-    non_zero_genes = counts_df[(counts_df > 0).all(axis=1)]
-    
-    if non_zero_genes.empty:
-        st.warning("Uyarı: Tüm genlerde en az bir tane 0 var. Basit normalizasyon uygulanıyor.")
-        return pd.Series(1.0, index=counts_df.columns)
+st.sidebar.subheader("🔍 Arama Desenleri")
+SEARCH_PATTERN_BAM = st.sidebar.text_input("BAM Arama Deseni", value="**/bam_files_final/*.bam")
+SEARCH_PATTERN_QUANT = st.sidebar.text_input("Salmon Arama Deseni", value="**/*_quant/quant.sf")
 
-    # Referans (Geometrik Ortalama)
-    log_geomeans = np.log(non_zero_genes).mean(axis=1)
-    
-    # Ratio hesapla
-    cnts_sub = counts_df.loc[non_zero_genes.index]
-    ratios = cnts_sub.div(np.exp(log_geomeans), axis=0)
-    
-    # Medyan al (Size Factor)
-    size_factors = ratios.median(axis=0)
-    return size_factors
+st.sidebar.subheader("⚙️ Analiz Modu")
+mode_selection = st.sidebar.radio("Hangi analiz yapılsın?", ("Her İkisi (3)", "Sadece HISAT/BAM (1)", "Sadece SALMON (2)"))
 
-def r_style_normalization(counts_df):
-    """
-    Ham count verisini DESeq2 mantığıyla normalize eder ve log2 dönüşümü yapar.
-    """
-    # Veriyi float'a çevir (güvenlik)
-    counts_df = counts_df.astype(float)
-    
-    # Size Factors Hesapla
-    sf = calculate_size_factors_deseq_style(counts_df)
-    
-    # Normalize Et (Counts / SizeFactor)
-    norm_counts = counts_df.div(sf, axis=1)
-    
-    # Log2 Dönüşümü (log2(n + 1))
-    log_norm_counts = np.log2(norm_counts + 1)
-    
-    return log_norm_counts, sf
+# Modu sayıya çevir
+MODE = 3
+if "Sadece HISAT" in mode_selection: MODE = 1
+elif "Sadece SALMON" in mode_selection: MODE = 2
 
-def calculate_pca_r_style(log_norm_df, ntop=500):
-    """
-    R (DESeq2) PCA çıktısına en yakın sonucu üretmek için
-    düşük varyanslı/gürültülü genleri filtreleyerek PCA yapar.
-    """
-    # 1. Gürültü Filtresi (Noise Filter)
-    # Ortalaması 1'den küçük olan çok silik genleri at.
-    mean_filter = log_norm_df.mean(axis=1) > 1.0 
-    filtered_df = log_norm_df[mean_filter]
+st.sidebar.subheader("🎚️ BAM Hassasiyeti")
+MIN_MAPQ = st.sidebar.number_input("Min MapQ", value=1, min_value=0)
 
-    # Eğer filtre çok fazla gen atarsa, filtreyi iptal et
-    if len(filtered_df) < ntop:
-        filtered_df = log_norm_df
-
-    # 2. Varyans Hesapla (N-1 ddof)
-    rv = filtered_df.var(axis=1, ddof=1)
-    
-    # 3. En yüksek varyanslı genleri seç
-    select = rv.sort_values(ascending=False).head(ntop).index
-    
-    # 4. MATRİSİ HAZIRLA
-    pca_input = log_norm_df.loc[select].T
-    
-    # --- KRİTİK DÜZELTME: STANDARTLAŞTIRMA (SCALING) ---
-    # R'daki VST'nin yarattığı varyans dağılımını yakalamak için
-    # veriyi scale ediyoruz (Ortalama=0, Varyans=1 yapıyoruz).
-    # Bu işlem PC1 varyans oranını genellikle arttırır ve %40'lara yaklaştırır.
-    scaler = StandardScaler()
-    pca_input_scaled = scaler.fit_transform(pca_input)
-    
-    # 5. PCA Uygula
-    pca = PCA(n_components=2)
-    pca_res = pca.fit_transform(pca_input_scaled)
-    percentVar = pca.explained_variance_ratio_ * 100
-    
-    return pca_res, percentVar, select
+# Çıktı Klasörleri
+OUT_DIR_HISAT = os.path.join(BASE_DIR, "DESeq2_Input_HISAT_Verbose")
+OUT_DIR_SALMON = os.path.join(BASE_DIR, "DESeq2_Input_SALMON_Verbose")
 
 # ==============================================================================
-# 4. ARAYÜZ (SIDEBAR)
+# YENİ ANALİZ / CACHE TEMİZLEME BUTONU
 # ==============================================================================
-with st.sidebar:
-    st.header("1. Veri Yükleme")
-    st.info("Lütfen CSV dosyalarını yükleyin.")
+if st.sidebar.button("🧹 Önbelleği Temizle / Yeni Analiz", type="primary"):
+    st.cache_data.clear()
+    st.cache_resource.clear()
+    st.success("Önbellek temizlendi! Sayfa yenileniyor...")
+    st.rerun()
+
+# ==============================================================================
+# YARDIMCI SINIF VE FONKSİYONLAR
+# ==============================================================================
+
+def normalize_id(s):
+    if not s: return None
+    s = str(s).strip()
+    for prefix in ['gene-', 'rna-', 'transcript-', 'id-', 'mps-']:
+        if s.startswith(prefix): return s[len(prefix):].split('.')[0]
+    return s.split('.')[0]
+
+class GeneInterval:
+    def __init__(self, gene_id, chrom):
+        self.gene_id = gene_id
+        self.chrom = chrom
+        self.exons = []
+        self.start = float('inf')
+        self.end = float('-inf')
+
+    def add_exon(self, start, end):
+        self.exons.append((start, end))
+        self.start = min(self.start, start)
+        self.end = max(self.end, end)
+
+# GFF Okuma işlemini Cache'liyoruz (Hız için)
+@st.cache_data(show_spinner=False)
+def parse_gff_cached(gff_path):
+    if not os.path.exists(gff_path):
+        return None, None, f"GFF dosyası bulunamadı: {gff_path}"
+
+    genes = {} 
+    tx2gene = {}
+    rna_parent_map = {}
+    unique_chroms = set()
+    log_messages = []
+
+    try:
+        with open(gff_path, "r") as f:
+            for line in f:
+                if line.startswith("#"): continue
+                parts = line.strip().split("\t")
+                if len(parts) < 9: continue
+                
+                chrom, _, feat, start, end, _, _, _, attribs = parts
+                start, end = int(start)-1, int(end)
+                unique_chroms.add(chrom)
+                
+                attr = {x.split('=')[0]: x.split('=')[1] for x in attribs.split(';') if '=' in x}
+                
+                if feat == "gene":
+                    gid = normalize_id(attr.get("ID"))
+                    if gid: genes[gid] = GeneInterval(gid, chrom)
+                elif feat in ["mRNA", "transcript", "lincRNA"]:
+                    tid = normalize_id(attr.get("ID"))
+                    gid = normalize_id(attr.get("Parent"))
+                    if tid and gid: 
+                        rna_parent_map[tid] = gid
+                        tx2gene[tid] = gid
+                elif feat == "exon":
+                    parent = normalize_id(attr.get("Parent"))
+                    gid = rna_parent_map.get(parent, parent)
+                    if gid:
+                        if gid not in genes: genes[gid] = GeneInterval(gid, chrom)
+                        genes[gid].add_exon(start, end)
+        
+        return genes, tx2gene, f"✅ GFF Okundu. Toplam Gen: {len(genes)}. Kromozomlar: {list(unique_chroms)[:5]}..."
+    except Exception as e:
+        return None, None, str(e)
+
+# ==============================================================================
+# BAM ANALİZİ (STREAMLIT UYUMLU)
+# ==============================================================================
+def process_bam_files(bam_files, genes_db):
+    md_hisat = {}
+    all_genes_h = set(genes_db.keys())
     
-    f_hisat = st.file_uploader("HISAT Counts (CSV)", type=["csv"], key="hisat")
-    f_salmon = st.file_uploader("SALMON Counts (CSV)", type=["csv"], key="salmon")
-    st.markdown("---")
-    f_samples = st.file_uploader("Samples Metadata (CSV)", type=["csv"], key="samples")
-    f_genes = st.file_uploader("Gen Listesi (Opsiyonel - TXT)", type=["txt"], key="genes")
+    overall_progress = st.progress(0)
+    status_text = st.empty()
+    logs = []
+
+    for idx, bam_path in enumerate(bam_files):
+        base_name = os.path.basename(bam_path)
+        status_text.text(f"İşleniyor ({idx+1}/{len(bam_files)}): {base_name}")
+        overall_progress.progress((idx) / len(bam_files))
+        
+        counts = defaultdict(int)
+        total_assigned_reads = 0
+        
+        try:
+            # Index kontrolü
+            if not os.path.exists(bam_path + ".bai"):
+                pysam.index(bam_path)
+            
+            samfile = pysam.AlignmentFile(bam_path, "rb")
+            bam_refs = set(samfile.references)
+            
+            # Kromozom Eşleme Mantığı
+            genes_by_chrom = defaultdict(list)
+            for g in genes_db.values():
+                genes_by_chrom[g.chrom].append(g)
+            
+            matched_chroms = 0
+            chrom_map = {}
+            for g_chrom in genes_by_chrom.keys():
+                target = None
+                if g_chrom in bam_refs: target = g_chrom
+                else:
+                    cands = [g_chrom.replace("Scaffold", ""), f"Scaffold{g_chrom}", f"chr{g_chrom}", g_chrom.replace("chr","")]
+                    target = next((c for c in cands if c in bam_refs), None)
+                
+                if target:
+                    chrom_map[g_chrom] = target
+                    matched_chroms += 1
+            
+            if matched_chroms == 0:
+                logs.append(f"❌ {base_name}: Hiçbir kromozom eşleşmedi!")
+                md_hisat[base_name.replace(".bam", "")] = {}
+                samfile.close()
+                continue
+
+            # --- Sayım Döngüsü (Görselleştirilmiş) ---
+            # Tek bir dosya için inner progress bar
+            file_progress = st.progress(0)
+            total_chroms_to_scan = len(chrom_map)
+            chrom_processed_count = 0
+
+            for g_chrom, target_chrom in chrom_map.items():
+                # Performans için: Her kromozomda bar güncelleme
+                chrom_processed_count += 1
+                if chrom_processed_count % 10 == 0:
+                    file_progress.progress(chrom_processed_count / total_chroms_to_scan)
+
+                for gene in genes_by_chrom[g_chrom]:
+                    if gene.start >= gene.end: continue
+                    try:
+                        read_names = set()
+                        iter_reads = samfile.fetch(target_chrom, gene.start, gene.end)
+                        for read in iter_reads:
+                            if read.is_secondary or read.is_supplementary or read.is_unmapped: continue
+                            if read.mapping_quality < MIN_MAPQ: continue
+                            
+                            is_exonic = False
+                            r_s, r_e = read.reference_start, read.reference_end
+                            for es, ee in gene.exons:
+                                if r_s < ee and r_e > es:
+                                    is_exonic = True
+                                    break
+                            
+                            if is_exonic:
+                                read_names.add(read.query_name)
+                        
+                        if read_names:
+                            cnt = len(read_names)
+                            counts[gene.gene_id] = cnt
+                            total_assigned_reads += cnt
+                    except ValueError: continue
+            
+            file_progress.empty() # Dosya bitince barı temizle
+            logs.append(f"✅ {base_name}: {total_assigned_reads} okuma atandı.")
+            md_hisat[base_name.replace(".bam", "")] = counts
+            samfile.close()
+
+        except Exception as e:
+            logs.append(f"🛑 HATA {base_name}: {e}")
+            md_hisat[base_name.replace(".bam", "")] = {}
+
+    overall_progress.progress(1.0)
+    status_text.text("BAM analizi tamamlandı.")
     
-    st.markdown("---")
+    # DataFrame oluşturma
+    df_h = pd.DataFrame(index=sorted(list(all_genes_h)))
+    for s, c in md_hisat.items():
+        df_h[s] = pd.Series(c).reindex(df_h.index, fill_value=0)
     
-    # Butona basınca state güncellenir
-    if st.button("Analizi Başlat", type="primary"):
-        st.session_state.processed = False
-        st.session_state.run_trigger = True
+    return df_h.fillna(0).astype(int), logs
+
+# ==============================================================================
+# SALMON ANALİZİ (STREAMLIT UYUMLU)
+# ==============================================================================
+def process_salmon_files(quant_pattern, tx2gene):
+    full_pattern = os.path.join(BASE_DIR, quant_pattern)
+    quant_files = glob.glob(full_pattern, recursive=True)
+    
+    if not quant_files:
+        return None, ["Salmon dosyası bulunamadı."]
+
+    master_data = {}
+    all_genes = set(tx2gene.values())
+    logs = []
+    
+    progress_bar = st.progress(0)
+    
+    for i, q_path in enumerate(quant_files):
+        progress_bar.progress((i+1) / len(quant_files))
+        s_name = os.path.dirname(q_path).split(os.sep)[-1].replace("_quant", "")
+        
+        try:
+            df = pd.read_csv(q_path, sep="\t")
+            df['CleanName'] = df['Name'].apply(normalize_id)
+            df['GeneID'] = df['CleanName'].map(tx2gene).fillna(df['CleanName'])
+            grouped = df.groupby('GeneID')['NumReads'].sum()
+            
+            master_data[s_name] = grouped.to_dict()
+            all_genes.update(grouped.index)
+            logs.append(f"🔹 {s_name}: {int(grouped.sum())} okuma işlendi.")
+        except Exception as e:
+            logs.append(f"🛑 HATA {s_name}: {e}")
+
+    df_f = pd.DataFrame(index=sorted(list(all_genes)))
+    for s, c in master_data.items():
+        df_f[s] = pd.Series(c).reindex(df_f.index, fill_value=0)
+    
+    return df_f.fillna(0).round().astype(int), logs
+
+# ==============================================================================
+# MAIN UYGULAMA AKIŞI
+# ==============================================================================
+
+# Başlat Butonu
+if st.button("🚀 Analizi Başlat", type="primary"):
+    
+    if not os.path.exists(BASE_DIR):
+        st.error(f"Ana dizin bulunamadı: {BASE_DIR}")
+        st.stop()
+
+    # 1. GFF Okuma
+    with st.spinner('GFF dosyası okunuyor...'):
+        gene_db, tx2gene, msg = parse_gff_cached(GFF_FILE)
+    
+    if gene_db is None:
+        st.error(msg)
+        st.stop()
     else:
-        # Sayfa yenilendiğinde trigger false kalmalı ki döngüye girmesin
-        # Ancak processed True ise sonuçlar ekranda kalmaya devam eder.
-        st.session_state.run_trigger = False
+        st.info(msg)
 
-# ==============================================================================
-# 5. VERİ İŞLEME MANTIĞI
-# ==============================================================================
-# Trigger tetiklendiyse veya veri daha önce işlendiyse (refresh durumunda kaybolmasın diye)
-if st.session_state.run_trigger or (st.session_state.processed and f_samples):
-    
-    if not f_samples:
-        st.error("Samples dosyası yüklenmedi! Lütfen yükleyip tekrar deneyin.")
-        st.stop()
+    # 2. HISAT/BAM Analizi
+    if MODE == 1 or MODE == 3:
+        st.subheader("📊 HISAT/BAM Analiz Sonuçları")
+        full_bam_pattern = os.path.join(BASE_DIR, SEARCH_PATTERN_BAM)
+        bam_files = glob.glob(full_bam_pattern, recursive=True)
         
-    # --- Metadata Okuma ---
-    try:
-        if f_samples: f_samples.seek(0)
-        samp = pd.read_csv(f_samples, index_col=0)
-        
-        # Condition sütununu bul
-        d_col = "condition" 
-        if "condition" not in samp.columns: 
-            d_col = samp.columns[0] # Condition yoksa ilk sütunu al
+        if bam_files:
+            st.write(f"Bulunan BAM Dosyası Sayısı: {len(bam_files)}")
             
-        samp[d_col] = samp[d_col].astype(str)
-        
-        st.session_state.meta_df = samp
-        st.session_state.design_col = d_col
-    except Exception as e:
-        st.error(f"Samples dosyası okunurken hata: {e}")
-        st.stop()
-    
-    # --- Count Verilerini Okuma ---
-    try:
-        # HISAT
-        if f_hisat:
-            f_hisat.seek(0)
-            h_df = pd.read_csv(f_hisat, index_col=0)
-            # Metadata ile eşleşen sütunları al
-            common_h = list(set(h_df.columns) & set(samp.index))
-            st.session_state.hisat_df = h_df[common_h]
+            with st.spinner("BAM dosyaları taranıyor (Bu işlem uzun sürebilir)..."):
+                df_hisat, logs_hisat = process_bam_files(bam_files, gene_db)
             
-        # SALMON
-        if f_salmon:
-            f_salmon.seek(0)
-            s_df = pd.read_csv(f_salmon, index_col=0)
-            common_s = list(set(s_df.columns) & set(samp.index))
-            st.session_state.salmon_df = s_df[common_s]
+            # Logları Göster
+            with st.expander("BAM İşlem Logları (Tıkla Gör)", expanded=False):
+                for l in logs_hisat: st.write(l)
             
-        st.session_state.processed = True
-        
-    except Exception as e:
-        st.error(f"Count dosyaları okunurken hata: {e}")
-        st.session_state.processed = False
-
-# ==============================================================================
-# 6. SONUÇ GÖSTERİMİ
-# ==============================================================================
-if st.session_state.processed:
-    meta = st.session_state.meta_df
-    d_col = st.session_state.design_col
-    
-    # Eğer hiç veri yoksa uyar
-    if st.session_state.hisat_df is None and st.session_state.salmon_df is None:
-        st.warning("Görüntülenecek veri yok. Lütfen HISAT veya SALMON dosyasını yükleyin.")
-        st.stop()
-
-    # Sekmeleri oluştur
-    tabs = st.tabs(["📊 HISAT2 Analizi", "📊 SALMON Analizi"])
-    datasets = []
-    
-    if st.session_state.hisat_df is not None: 
-        datasets.append(("HISAT2", st.session_state.hisat_df, tabs[0]))
-    if st.session_state.salmon_df is not None: 
-        datasets.append(("SALMON", st.session_state.salmon_df, tabs[1]))
-    
-    # Her veri seti için döngü
-    for name, raw_counts, tab in datasets:
-        with tab:
-            # --- A. Normalizasyon ---
-            log_norm, sf = r_style_normalization(raw_counts)
+            # Önizleme ve İndirme
+            st.dataframe(df_hisat.head())
             
-            with st.expander(f"ℹ️ {name} - Normalizasyon Detayları"):
-                st.write("**Size Factors:**")
-                st.dataframe(sf.to_frame(name="SizeFactor").T)
-                st.write(f"Toplam Gen Sayısı: {len(log_norm)}")
-
-            # --- B. PCA Analizi ---
-            st.subheader(f"PCA Analizi - {name}")
+            os.makedirs(OUT_DIR_HISAT, exist_ok=True)
+            out_file_h = os.path.join(OUT_DIR_HISAT, "HISAT_Raw_Counts_Matrix_Verbose.csv")
+            df_hisat.to_csv(out_file_h)
             
-            c1, c2, c3, c4 = st.columns(4)
-            use_custom = c1.checkbox(f"Gen Listesi Kullan", key=f"uc_{name}")
-            inv_x = c2.checkbox("X Eksenini Çevir", value=False, key=f"ix_{name}")
-            inv_y = c3.checkbox("Y Eksenini Çevir", value=False, key=f"iy_{name}")
-            
-            # PCA Hesaplama Mantığı
-            valid_genes = []
-            if use_custom and f_genes:
-                f_genes.seek(0)
-                targets = [l.decode("utf-8").strip() for l in f_genes]
-                # Datada mevcut olanları al
-                valid_genes = [t for t in targets if t in log_norm.index]
-                
-                if not valid_genes:
-                    st.error("Yüklenen gen listesindeki genler veride bulunamadı!")
-                    st.stop()
-                
-                # Özel listede varyans filtrelemesi yapılmaz, hepsi alınır
-                pca_input = log_norm.loc[valid_genes].T
-                pca = PCA(n_components=2)
-                pca_res = pca.fit_transform(pca_input)
-                percentVar = pca.explained_variance_ratio_ * 100
-                title_suffix = f"(User List: {len(valid_genes)})"
-            else:
-                # Standart R Stili (Top 500 varyans)
-                pca_res, percentVar, _ = calculate_pca_r_style(log_norm, ntop=500)
-                title_suffix = "(Top 500 Genes)"
-
-            # Eksen çevirme (Görseli R ile eşleştirmek için)
-            if inv_x: pca_res[:,0] *= -1
-            if inv_y: pca_res[:,1] *= -1
-            
-            # Plot DataFrame hazırlığı
-            plot_df = pd.DataFrame(pca_res, columns=["PC1", "PC2"], index=log_norm.columns)
-            # Grupları metadata'dan çek
-            plot_df['group'] = meta.loc[plot_df.index, d_col]
-            
-            # --- PCA Grafiği Çizimi ---
-            fig, ax = plt.subplots(figsize=(8, 8)) # Kareye yakın format
-            
-            sns.scatterplot(
-                data=plot_df, x="PC1", y="PC2", 
-                hue="group", style="group",
-                s=200, alpha=0.9, ax=ax, 
-                edgecolor="black", linewidth=0.8, palette="Set1"
+            st.success(f"HISAT Matrisi Kaydedildi: {out_file_h}")
+            st.download_button(
+                label="📥 HISAT CSV İndir",
+                data=df_hisat.to_csv().encode('utf-8'),
+                file_name="HISAT_Raw_Counts.csv",
+                mime='text/csv'
             )
+        else:
+            st.warning("⚠️ Belirtilen yolda BAM dosyası bulunamadı!")
+
+    st.markdown("---")
+
+    # 3. SALMON Analizi
+    if MODE == 2 or MODE == 3:
+        st.subheader("🐟 SALMON Analiz Sonuçları")
+        with st.spinner("Salmon dosyaları işleniyor..."):
+            df_salmon, logs_salmon = process_salmon_files(SEARCH_PATTERN_QUANT, tx2gene)
+        
+        if df_salmon is not None:
+             # Logları Göster
+            with st.expander("Salmon İşlem Logları (Tıkla Gör)", expanded=False):
+                for l in logs_salmon: st.write(l)
             
-            ax.set_xlabel(f"PC1: {int(round(percentVar[0]))}% variance", fontsize=12)
-            ax.set_ylabel(f"PC2: {int(round(percentVar[1]))}% variance", fontsize=12)
-            ax.set_title(f"PCA Plot {title_suffix} - {name}", fontsize=14)
-            ax.grid(True, linestyle=':', alpha=0.6)
-            ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left', frameon=False)
+            st.dataframe(df_salmon.head())
             
-            # Gösterim ve İndirme
-            col_graph, col_dl = st.columns([3, 1])
-            with col_graph:
-                st.pyplot(fig, use_container_width=False)
-            with col_dl:
-                st.markdown("### İndir")
-                st.download_button("PNG (HQ)", save_plot_hq(fig, "png"), f"PCA_{name}.png", "image/png")
-                st.download_button("SVG (Vektör)", save_plot_hq(fig, "svg"), f"PCA_{name}.svg", "image/svg+xml")
-            plt.close(fig)
+            os.makedirs(OUT_DIR_SALMON, exist_ok=True)
+            out_file_s = os.path.join(OUT_DIR_SALMON, "SALMON_Raw_Counts_Matrix.csv")
+            df_salmon.to_csv(out_file_s)
             
-            st.divider()
-            
-            # --- C. Heatmap Analizi ---
-            st.subheader("Heatmap Analizi")
-            
-            # Hangi genleri kullanacağız?
-            if use_custom and valid_genes:
-                hm_genes = valid_genes
-                hm_title = "Heatmap (Özel Liste)"
-            else:
-                # Varyansa göre Top 50
-                rv = log_norm.var(axis=1, ddof=1)
-                hm_genes = rv.sort_values(ascending=False).head(50).index
-                hm_title = "Heatmap (Top 50 Değişken Gen)"
-            
-            mat = log_norm.loc[hm_genes]
-            
-            # Z-Score Hesapla (Satır bazlı: (x - mean) / std)
-            # R pheatmap scale="row" mantığı
-            mat_z = mat.apply(lambda x: (x - x.mean()) / x.std(), axis=1)
-            
-            # Clustermap Çizimi
-            # method='complete' -> R pheatmap varsayılanına en yakınıdır.
-            try:
-                fig_hm = sns.clustermap(
-                    mat_z, 
-                    method='complete', 
-                    metric='euclidean',
-                    cmap="RdBu_r", # Kırmızı-Mavi (RColorBrewer stili)
-                    center=0, 
-                    col_cluster=False, # Sütunları (örnekleri) karıştırma
-                    figsize=(8, max(8, len(mat_z)*0.25)), # Dinamik yükseklik
-                    cbar_kws={'label': 'Z-Score'}
-                )
-                
-                fig_hm.ax_heatmap.set_title(hm_title)
-                
-                col_hm_g, col_hm_d = st.columns([3, 1])
-                with col_hm_g:
-                    st.pyplot(fig_hm)
-                with col_hm_d:
-                    st.markdown("### İndir")
-                    st.download_button("Heatmap PNG", save_plot_hq(fig_hm.fig, "png"), f"Heatmap_{name}.png", "image/png")
-                    st.download_button("Heatmap SVG", save_plot_hq(fig_hm.fig, "svg"), f"Heatmap_{name}.svg", "image/svg+xml")
-                plt.close(fig_hm.fig)
-                
-            except Exception as e:
-                st.error(f"Heatmap çizilirken hata oluştu (Gen sayısı çok az olabilir): {e}")
+            st.success(f"SALMON Matrisi Kaydedildi: {out_file_s}")
+            st.download_button(
+                label="📥 SALMON CSV İndir",
+                data=df_salmon.to_csv().encode('utf-8'),
+                file_name="SALMON_Raw_Counts.csv",
+                mime='text/csv'
+            )
+        else:
+            st.warning(logs_salmon[0])
+
+    st.balloons()
+    st.success("Tüm işlemler başarıyla tamamlandı.")
